@@ -1,0 +1,60 @@
+---
+description: Conventions for working within the primitives repository
+alwaysApply: true
+---
+
+# Primitives Repository Conventions
+
+This repo contains reusable full-stack primitives designed for AI-agent-driven integration.
+
+## Structure
+
+- Each primitive lives in a top-level directory (e.g., `agentic-ai-engine/`)
+- Every primitive MUST have: `manifest.yaml`, `INTEGRATION.md`, `CHANGELOG.md`
+- Code is organized by layer: `schema/`, `backend/`, `frontend/`, `config/`
+- `registry.yaml` at the root indexes all primitives
+
+## When Editing Primitives
+
+- **Canonical code is real, working code** -- not templates with placeholders
+- **Strip domain-specific logic** -- only the reusable core belongs here
+- **Update CHANGELOG.md** with every change, listing affected file paths
+- **Bump manifest.yaml version** following semver (patch/minor/major)
+- **Update INTEGRATION.md** if the integration steps change
+
+## INTEGRATION.md Quality
+
+The integration guide is the most important file. It must be:
+- **Mechanical** -- an AI agent should be able to follow it step-by-step
+- **Specific** -- include exact code snippets, not vague instructions
+- **Layered** -- organized by Database -> Backend -> Frontend -> Infrastructure
+- **Adaptive** -- include "Adaptation notes" for things that vary per project
+  (import paths, Base class references, User model foreign keys, etc.)
+
+## CHANGELOG.md Format
+
+```markdown
+## [X.Y.Z] - YYYY-MM-DD
+### Added/Changed/Fixed/Removed
+- Description of change
+  (files: path/to/affected/file.py, path/to/other.tsx)
+### Migration notes
+- Any schema changes or breaking changes
+```
+
+Always list affected files in parentheses after each change description.
+
+## manifest.yaml
+
+- `version` follows semver
+- `extracted_from` tracks provenance (repo, commit, date)
+- `extension_points` documents where apps are expected to customize
+- `provides` lists all models, routes, and components the primitive adds
+
+## Templates
+
+Use files from `templates/` when creating new primitives.
+
+## Registry
+
+Update `registry.yaml` when adding or removing primitives.

@@ -1,0 +1,100 @@
+# Observability Primitive - Docker Compose fragment
+# Merge these services into your project's docker-compose.yml
+#
+# Your backend service needs these environment variables:
+#   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+#   OTEL_SERVICE_NAME: your-backend-service-name
+#   LANGFUSE_HOST: http://langfuse:3000
+#   LANGFUSE_PUBLIC_KEY: <your-project-public-key>
+#   LANGFUSE_SECRET_KEY: <your-project-secret-key>
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config", "/etc/otelcol/config.yaml"]
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    depends_on:
+      - tempo
+      - loki
+
+  tempo:
+    image: grafana/tempo:2.7.2
+    command: ["-config.file=/etc/tempo/config.yaml"]
+    volumes:
+      - ./observability/tempo.yaml:/etc/tempo/config.yaml:ro
+      - .docker-data/tempo:/var/tempo
+
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.enable-remote-write-receiver"
+      - "--enable-feature=exemplar-storage"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - .docker-data/prometheus:/prometheus
+
+  loki:
+    image: grafana/loki:latest
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ./observability/loki.yaml:/etc/loki/config.yaml:ro
+      - .docker-data/loki:/loki
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"   # ADAPT: change host port if 3001 conflicts
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - .docker-data/grafana:/var/lib/grafana
+    depends_on:
+      - tempo
+      - prometheus
+      - loki
+
+  langfuse-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse
+      POSTGRES_DB: langfuse
+    volumes:
+      - .docker-data/langfuse-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  langfuse:
+    image: langfuse/langfuse:2
+    ports:
+      - "3002:3000"   # ADAPT: change host port if 3002 conflicts
+    environment:
+      DATABASE_URL: postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
+      NEXTAUTH_SECRET: change-me-in-production
+      SALT: change-me-in-production
+      ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+      NEXTAUTH_URL: http://localhost:3002
+      TELEMETRY_ENABLED: "true"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "true"
+      LANGFUSE_INIT_ORG_NAME: MyApp               # ADAPT
+      LANGFUSE_INIT_PROJECT_NAME: MyApp Dev        # ADAPT
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-dev  # ADAPT
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: sk-lf-dev  # ADAPT
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+    restart: on-failure

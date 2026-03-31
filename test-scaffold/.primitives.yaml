@@ -1,0 +1,30 @@
+primitives_repo: ~/git/primitives
+
+installed:
+  agentic-ai-engine:
+    version: "1.0.0"
+    applied_at: "2026-03-31"
+    file_mapping:
+      schema/models.py: backend/app/db/models/ai.py
+      backend/agents/base.py: backend/app/agents/base.py
+      backend/agents/runner.py: backend/app/agents/runner.py
+      backend/agents/supervisor.py: backend/app/agents/supervisor.py
+      backend/agents/registry.py: backend/app/agents/registry.py
+      backend/agents/settings_cache.py: backend/app/agents/settings_cache.py
+      backend/agents/__init__.py: backend/app/agents/__init__.py
+      backend/agents/memory/pool.py: backend/app/agents/memory/pool.py
+      backend/agents/memory/modifier.py: backend/app/agents/memory/modifier.py
+      backend/agents/memory/extraction.py: backend/app/agents/memory/extraction.py
+      backend/agents/memory/cleanup.py: backend/app/agents/memory/cleanup.py
+      backend/agents/memory/state.py: backend/app/agents/memory/state.py
+      backend/agents/memory/tools.py: backend/app/agents/memory/tools.py
+      backend/agents/llm/manager.py: backend/app/agents/llm/manager.py
+      backend/agents/tools/registry.py: backend/app/agents/tools/registry.py
+      backend/agents/tools/base.py: backend/app/agents/tools/base.py
+      backend/agents/tools/chat_history.py: backend/app/agents/tools/chat_history.py
+      backend/agents/tools/feedback_gap.py: backend/app/agents/tools/feedback_gap.py
+      backend/agents/context/manager.py: backend/app/agents/context/manager.py
+      backend/agents/context/summarizer.py: backend/app/agents/context/summarizer.py
+      backend/agents/knowledge/generator.py: backend/app/agents/knowledge/generator.py
+      backend/api/chat.py: backend/app/api/chat.py
+    customizations: []

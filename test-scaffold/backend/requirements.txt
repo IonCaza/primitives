@@ -1,0 +1,19 @@
+fastapi>=0.115
+uvicorn>=0.30
+sqlalchemy[asyncio]>=2.0
+asyncpg>=0.30
+pydantic>=2.0
+pydantic-settings>=2.0
+alembic>=1.13
+
+# From agentic-ai-engine primitive
+langchain>=0.3
+langchain-litellm>=0.3
+langgraph>=0.4
+langgraph-checkpoint-postgres>=2.0
+langmem>=0.1
+litellm>=1.60
+psycopg[binary]>=3.2
+psycopg-pool>=3.2
+cryptography>=44.0
+sse-starlette>=2.0

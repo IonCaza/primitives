@@ -1,0 +1,17 @@
+{
+  "description": "Add these dependencies to your project's package.json",
+  "dependencies": {
+    "@assistant-ui/react": "^0.12",
+    "@assistant-ui/core": "^0.12",
+    "assistant-stream": "^0.1",
+    "react-markdown": "^10",
+    "remark-gfm": "^4",
+    "react-resizable-panels": "^2",
+    "lucide-react": "^0.400"
+  },
+  "notes": [
+    "shadcn/ui components (Button, Select, etc.) must already be installed",
+    "@tanstack/react-query must already be configured",
+    "Tailwind CSS must already be configured"
+  ]
+}

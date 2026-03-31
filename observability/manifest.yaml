@@ -1,0 +1,50 @@
+name: observability
+version: "1.0.0"
+description: >
+  Full observability stack: OpenTelemetry SDK + Collector, Grafana Tempo
+  (distributed tracing), Prometheus (metrics), Loki (logs), Grafana
+  (visualization), and LangFuse (LLM/agent tracing). Auto-instruments
+  SQLAlchemy, Redis, httpx, and FastAPI. Includes custom agent metrics.
+
+stack:
+  frontend: []
+  backend: [python, fastapi, opentelemetry]
+  persistence: []
+  infrastructure: [docker, otel-collector, grafana, tempo, prometheus, loki, langfuse]
+
+requires_primitives:
+  - name: agentic-ai-engine
+    reason: "Agent metrics (runs, duration, tool calls, errors) instrument the agent engine"
+    optional: true
+
+provides:
+  database_models: []
+  api_routes: []
+  frontend_components: []
+  infrastructure_services:
+    - otel-collector (OTLP receiver, routes to Tempo/Prometheus/Loki)
+    - tempo (distributed trace storage)
+    - prometheus (metrics storage + scraping)
+    - loki (log aggregation)
+    - grafana (visualization dashboards)
+    - langfuse + langfuse-db (LLM/agent trace analysis)
+
+extension_points:
+  - name: "Custom metrics"
+    location: "backend/core/telemetry.py"
+    description: >
+      Use get_meter() and get_tracer() to add domain-specific
+      metrics and spans beyond the built-in agent metrics.
+  - name: "Grafana dashboards"
+    location: "config/grafana/provisioning/dashboards/"
+    description: >
+      Add JSON dashboard files for domain-specific visualizations.
+  - name: "Prometheus alerts"
+    location: "config/prometheus.yaml"
+    description: >
+      Add alerting rules to the Prometheus configuration.
+
+extracted_from:
+  - repo: uad36
+    commit: 991a840d1abc44c06187418b974f3628cbbd08a7
+    date: "2026-03-31"

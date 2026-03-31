@@ -1,0 +1,39 @@
+# Primitive Manifest Template
+# Copy this file into your primitive directory as manifest.yaml and fill in the values.
+
+name: "<primitive-name>"
+version: "1.0.0"
+description: >
+  <One-paragraph description of what this primitive provides.>
+
+stack:
+  frontend: []   # e.g. [react, next.js, shadcn, tanstack-query]
+  backend: []    # e.g. [python, fastapi, sqlalchemy]
+  persistence: [] # e.g. [postgresql, redis]
+  infrastructure: [] # e.g. [docker, otel-collector, grafana]
+
+requires_primitives: []
+# Example:
+#   - name: agentic-ai-engine
+#     reason: "Instruments agent runs with OTel spans"
+#     optional: true
+
+provides:
+  database_models: []
+  api_routes: []
+  # Example:
+  #   - { path: "/api/v1/chat", methods: [POST], description: "SSE streaming chat" }
+  frontend_components: []
+  infrastructure_services: []
+
+extension_points: []
+# Example:
+#   - name: "Custom tool categories"
+#     location: "backend/agents/tools/"
+#     description: "Add domain-specific tool modules that self-register"
+
+extracted_from: []
+# Example:
+#   - repo: my-app
+#     commit: abc123
+#     date: "2026-03-31"

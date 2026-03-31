@@ -1,0 +1,19 @@
+# Primitives Registry
+# Index of all available primitives in this repository.
+# Each entry points to a primitive directory containing a manifest.yaml.
+
+primitives:
+  - name: agentic-ai-engine
+    path: agentic-ai-engine/
+    description: >
+      Full-stack multi-agent AI engine with LangGraph supervisor pattern,
+      DB-driven agent configuration, 3-tier memory, SSE streaming,
+      and assistant-ui chat interface.
+    status: active
+
+  - name: observability
+    path: observability/
+    description: >
+      Full observability stack with OpenTelemetry, Grafana, Tempo,
+      Prometheus, Loki, and Langfuse for LLM tracing.
+    status: active

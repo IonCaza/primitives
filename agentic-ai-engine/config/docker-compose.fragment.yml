@@ -1,0 +1,32 @@
+# Agentic AI Engine - Docker Compose fragment
+# Merge these services into your project's docker-compose.yml
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg18-trixie
+    # pgvector image is required for long-term memory vector storage.
+    # If you already use plain postgres, switch to pgvector (it's a superset).
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-myapp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-myapp}
+      POSTGRES_DB: ${POSTGRES_DB:-myapp}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-myapp}"]
+      interval: 5s
+      retries: 5
+
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 5
+
+volumes:
+  pgdata:

@@ -1,0 +1,80 @@
+name: agentic-ai-engine
+version: "1.0.0"
+description: >
+  Full-stack multi-agent AI engine with LangGraph supervisor pattern,
+  DB-driven agent configuration, 3-tier memory (checkpoint + summarization +
+  vector extraction), SSE streaming chat, and assistant-ui chat interface.
+  Supports any LLM provider via LiteLLM, self-registering tool categories,
+  knowledge graph injection, and encrypted API key management.
+
+stack:
+  frontend: [react, next.js, assistant-ui, shadcn, tanstack-query]
+  backend: [python, fastapi, langchain, langgraph, litellm, langmem, pydantic]
+  persistence: [postgresql, pgvector, redis]
+
+requires_primitives: []
+
+provides:
+  database_models:
+    - AiSettings
+    - LlmProvider
+    - AgentConfig
+    - AgentToolAssignment
+    - SupervisorMember
+    - KnowledgeGraph
+    - AgentKnowledgeGraphAssignment
+    - ChatSession
+    - ChatMessage
+    - AgentActivity
+    - Feedback
+  api_routes:
+    - { path: "/api/v1/chat", methods: [POST, GET, PATCH, DELETE], description: "SSE streaming chat + session CRUD" }
+    - { path: "/api/v1/agents", methods: [GET, POST, PUT, DELETE], description: "Agent configuration CRUD" }
+    - { path: "/api/v1/ai-settings", methods: [GET, PUT], description: "Global AI settings" }
+    - { path: "/api/v1/llm-providers", methods: [GET, POST, PUT, DELETE], description: "LLM provider management" }
+    - { path: "/api/v1/ai-tools", methods: [GET], description: "List registered tools" }
+    - { path: "/api/v1/knowledge-graphs", methods: [GET, POST, PUT, DELETE], description: "Knowledge graph CRUD" }
+  frontend_components:
+    - ChatRuntime (SSE adapter bridging assistant-ui to the backend)
+    - ChatPanel (resizable panel with thread list + agent activity)
+    - AgentActivityPanel (live + historical delegation tracking)
+    - Thread, MarkdownText, ToolFallback, ThreadList (assistant-ui components)
+
+extension_points:
+  - name: "Custom tool categories"
+    location: "backend/agents/tools/"
+    description: >
+      Add domain-specific tool modules that call register_tool_category()
+      at import time. Each module defines ToolDefinition dataclasses and a
+      factory function that returns LangChain tools given a DB session.
+  - name: "Builtin agent definitions"
+    location: "backend/agents/builtin/"
+    description: >
+      Define domain-specific agents with custom system prompts and tool
+      sets. Agents are seeded into the DB on startup and configurable at
+      runtime via the admin UI.
+  - name: "Agent system prompts"
+    location: "backend/agents/prompts/"
+    description: >
+      Default prompt strings for builtin agents. Each prompt includes
+      sections for capability reporting, conversation context, and
+      long-term memory usage.
+  - name: "Chat event handlers"
+    location: "frontend/components/assistant-ui/"
+    description: >
+      Customize how SSE events (token, thinking, agent_start/token/done,
+      presentation_update) render in the chat UI.
+  - name: "Tool registry imports"
+    location: "backend/agents/registry.py"
+    description: >
+      The registry module imports tool category modules to trigger
+      self-registration. Add imports for your domain-specific tool
+      modules here.
+
+extracted_from:
+  - repo: contributr
+    commit: fab41bb728373d1087389b2a785a476b36730368
+    date: "2026-03-31"
+  - repo: uad36
+    commit: 991a840d1abc44c06187418b974f3628cbbd08a7
+    date: "2026-03-31"

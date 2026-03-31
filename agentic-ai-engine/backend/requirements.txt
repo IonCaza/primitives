@@ -1,0 +1,25 @@
+# Agentic AI Engine - Python dependencies
+# Add these to your project's requirements.txt
+
+# LangChain ecosystem
+langchain>=0.3
+langchain-litellm>=0.3
+langgraph>=0.4
+langgraph-checkpoint-postgres>=2.0
+langmem>=0.1
+
+# LLM gateway
+litellm>=1.60
+
+# LangGraph memory infrastructure (psycopg, not asyncpg)
+psycopg[binary]>=3.2
+psycopg-pool>=3.2
+
+# Encryption for API keys
+cryptography>=44.0
+
+# SSE streaming
+sse-starlette>=2.0
+
+# Already required by most FastAPI projects:
+# fastapi, sqlalchemy[asyncio], asyncpg, pydantic, uvicorn, redis

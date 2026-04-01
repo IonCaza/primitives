@@ -1,0 +1,99 @@
+name: authentication
+version: "1.0.0"
+description: >
+  Full-stack authentication primitive with pluggable auth providers (local + OIDC/OAuth2),
+  multi-factor authentication (TOTP authenticator + email OTP + recovery codes),
+  JWT token management with refresh flow, Fernet-based credential vaulting (platform
+  API tokens, SSH keys, OIDC client secrets, SMTP passwords), admin user management,
+  configurable email delivery with Jinja2 templates, and complete React frontend
+  (login, MFA verify, MFA setup, OIDC callback, forced password change, initial setup).
+
+stack:
+  backend:
+    language: python
+    framework: fastapi
+    orm: sqlalchemy (async)
+    auth: JWT (PyJWT) + bcrypt + PKCE
+  frontend:
+    language: typescript
+    framework: nextjs (app router)
+    ui: shadcn/ui + lucide-react
+  persistence:
+    database: postgresql
+    cache: redis
+  encryption: cryptography (Fernet)
+
+provides:
+  models:
+    - User (with MFA fields, OIDC linkage, password change flag)
+    - AuthSettings (singleton global auth policy)
+    - OidcProvider (OIDC/OAuth2 identity provider config)
+    - SmtpSettings (singleton SMTP config)
+    - EmailTemplate (Jinja2-based email templates)
+    - PlatformCredential (encrypted API token vault)
+    - SSHCredential (encrypted SSH key storage)
+
+  routes:
+    - POST /auth/register (first-run admin creation)
+    - POST /auth/login (local auth with MFA/password-change flow)
+    - POST /auth/refresh (JWT refresh)
+    - GET  /auth/me (current user)
+    - PUT  /auth/me (update profile)
+    - POST /auth/me/password (change own password)
+    - POST /auth/change-password (forced password change)
+    - GET  /auth/providers (public -- available login methods)
+    - GET  /auth/users (admin list users)
+    - POST /auth/users (admin create user with optional invite email)
+    - PUT  /auth/users/{id} (admin update user)
+    - DELETE /auth/users/{id} (admin delete user)
+    - POST /auth/users/{id}/mfa/reset (admin reset user MFA)
+    - POST /auth/mfa/verify (verify MFA during login)
+    - POST /auth/mfa/send-email-otp (send email OTP during login)
+    - GET  /auth/mfa/setup/options (available MFA methods)
+    - POST /auth/mfa/setup/totp/init (generate TOTP QR)
+    - POST /auth/mfa/setup/totp/confirm (confirm TOTP enrollment)
+    - POST /auth/mfa/setup/email/init (send setup email OTP)
+    - POST /auth/mfa/setup/email/confirm (confirm email MFA enrollment)
+    - POST /auth/mfa/disable (disable MFA)
+    - POST /auth/mfa/recovery-codes (regenerate recovery codes)
+    - GET  /auth/oidc/{slug}/authorize (OIDC login redirect)
+    - GET  /auth/oidc/{slug}/callback (OIDC callback)
+    - CRUD /settings/oidc-providers (admin OIDC provider management)
+    - POST /settings/oidc-providers/{id}/discover (OIDC discovery)
+    - POST /settings/oidc-providers/{id}/test (connectivity test)
+    - GET/PUT /settings/auth (admin auth policy)
+    - GET/PUT /settings/smtp (admin SMTP config)
+    - POST /settings/smtp/test (test SMTP)
+    - CRUD /settings/email-templates (admin email templates)
+    - CRUD /platform-credentials (encrypted API token vault)
+    - POST /platform-credentials/{id}/test (credential test)
+    - CRUD /ssh-keys (SSH key generation and management)
+
+  components:
+    - AuthProvider / useAuth (React context -- login, MFA, token lifecycle)
+    - MfaSetupDialog (TOTP QR scan, email OTP, recovery codes)
+    - LoginPage (local + OIDC login, MFA verify inline)
+    - SetupPage (first-run admin account creation)
+    - MfaSetupPage (forced MFA enrollment redirect)
+    - ChangePasswordPage (forced password change flow)
+    - OidcCallbackPage (OIDC token extraction)
+
+  services:
+    - encryption (_get_fernet, generate_keypair, decrypt_private_key)
+    - mfa (TOTP, email OTP with Redis cooldown, recovery codes)
+    - oidc (PKCE, discovery, JWKS, token exchange, claim mapping)
+    - email (SMTP sending with Jinja2 template rendering)
+
+extension_points:
+  - "Platform enum: Override the generic Platform enum with your app-specific platforms (GitHub, GitLab, Azure, etc.)"
+  - "Platform credential tests: Implement _test_platform_connectivity() for each platform"
+  - "TOTP issuer: Pass your app name to get_totp_provisioning_uri() via the issuer parameter"
+  - "Login page icon: Replace the Lock icon with your app's branding icon"
+  - "Post-login redirect: Change router.push('/dashboard') to your app's home route"
+  - "Email templates: Seed initial EmailTemplate rows for otp_code, user_invite, etc."
+  - "Auth provider plugin: Implement additional AuthProvider subclasses (LDAP, SAML, etc.)"
+
+extracted_from:
+  - repo: contributr
+    commit: fab41bb728373d1087389b2a785a476b36730368
+    date: "2026-03-31"

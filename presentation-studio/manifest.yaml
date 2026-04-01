@@ -1,0 +1,94 @@
+name: presentation-studio
+version: "1.0.0"
+description: >
+  AI-powered presentation studio for generating interactive dashboards
+  from project data. Agent generates React component code rendered in a
+  sandboxed iframe with live data access via a PostMessage bridge.
+  Includes versioned HTML templates, a data proxy, color palette picker,
+  and full CRUD with version history.
+
+stack:
+  frontend: [react, next.js, assistant-ui, shadcn, tanstack-query, recharts]
+  backend: [python, fastapi, langchain, sqlalchemy, pydantic]
+  persistence: [postgresql]
+
+requires_primitives:
+  - agentic-ai-engine
+
+provides:
+  database_models:
+    - PresentationTemplate
+    - Presentation
+    - PresentationVersion
+  api_routes:
+    - { path: "/api/projects/{id}/presentations", methods: [GET, POST], description: "List/create presentations" }
+    - { path: "/api/projects/{id}/presentations/{id}", methods: [GET, PATCH, DELETE], description: "Get/update/delete a presentation" }
+    - { path: "/api/projects/{id}/presentations/{id}/versions", methods: [GET], description: "Version history" }
+    - { path: "/api/presentations/templates/latest", methods: [GET], description: "Latest template" }
+    - { path: "/api/presentations/templates/{version}", methods: [GET], description: "Template by version" }
+    - { path: "/api/presentations/templates", methods: [POST], description: "Create new template version" }
+    - { path: "/api/projects/{id}/presentations/data", methods: [POST], description: "Data proxy for iframe bridge" }
+  frontend_components:
+    - PresentationStudio (split-pane chat + live preview editor)
+    - PresentationSandbox (iframe renderer with PostMessage bridge)
+    - PresentationStudioPage (detail page wrapper)
+    - NewPresentationPage (creation form with palette picker)
+    - PresentationsPage (list page with cards)
+  frontend_hooks:
+    - usePresentations
+    - usePresentation
+    - usePresentationVersions
+    - usePresentationTemplate
+    - useLatestPresentationTemplate
+    - useCreatePresentation
+    - useUpdatePresentation
+    - useDeletePresentation
+  agent_tools:
+    - save_presentation
+    - get_presentation
+    - update_presentation
+    - get_presentation_template
+    - update_presentation_template
+  builtin_agents:
+    - presentation-designer (supervisor)
+
+extension_points:
+  - name: "Allowed tool categories for data proxy"
+    location: "backend/api/presentations.py"
+    description: >
+      Override ALLOWED_TOOL_CATEGORIES to add domain-specific tool
+      categories (e.g., analytics, reporting) that the iframe data
+      bridge is allowed to invoke.
+  - name: "Presentation designer member agents"
+    location: "backend/agents/builtin/presentation_designer.py"
+    description: >
+      Add domain-specific analyst agents as member_slugs in the
+      presentation-designer SPEC. These become delegatable sub-agents
+      for data gathering.
+  - name: "Designer system prompt"
+    location: "backend/agents/prompts/presentation_designer.py"
+    description: >
+      Extend PRESENTATION_DESIGNER_PROMPT with domain-specific
+      delegation instructions (ask_*_analyst tools, domain terminology,
+      data schema hints).
+  - name: "Example prompts"
+    location: "frontend/pages/presentations/new/page.tsx"
+    description: >
+      Replace EXAMPLE_PROMPTS with domain-specific dashboard examples
+      relevant to your application.
+  - name: "Palette presets"
+    location: "frontend/pages/presentations/new/page.tsx"
+    description: >
+      Replace DEFAULT_PALETTE with your application's brand colors.
+      Add additional preset options to the PaletteSelector.
+  - name: "PostMessage protocol type"
+    location: "config/v1-template.html, frontend/components/presentation-sandbox.tsx"
+    description: >
+      The canonical protocol uses "presentation_query". If migrating
+      from an app that uses a different type (e.g., "contributr_query"),
+      update both the template HTML and the sandbox listener.
+
+extracted_from:
+  - repo: contributr
+    commit: fab41bb728373d1087389b2a785a476b36730368
+    date: "2026-03-31"

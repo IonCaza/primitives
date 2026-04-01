@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script type="importmap">
+  { "imports": {
+    "react": "https://esm.sh/react@19",
+    "react/": "https://esm.sh/react@19/",
+    "react-dom": "https://esm.sh/react-dom@19",
+    "react-dom/": "https://esm.sh/react-dom@19/",
+    "recharts": "https://esm.sh/recharts@3?external=react,react-dom"
+  }}
+  </script>
+  <style>
+    body { margin: 0; }
+    .studio-loading { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    .studio-error { color: #fca5a5; background: rgba(127,29,29,0.3); border: 1px solid #7f1d1d; border-radius: 12px; padding: 16px; margin: 16px; }
+  </style>
+</head>
+<body class="bg-gray-950 text-white">
+  <div id="root"><div class="studio-loading"><p style="color:#6b7280">Loading presentation&hellip;</p></div></div>
+  <script type="module">
+    import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+    import { createRoot } from "react-dom/client";
+    import {
+      ResponsiveContainer, BarChart, Bar, LineChart, Line, AreaChart, Area,
+      PieChart, Pie, Cell, RadarChart, Radar, PolarGrid, PolarAngleAxis,
+      PolarRadiusAxis, ScatterChart, Scatter, ComposedChart, RadialBarChart,
+      RadialBar, Treemap, FunnelChart, Funnel, XAxis, YAxis, ZAxis,
+      CartesianGrid, Tooltip, Legend, Brush, ReferenceLine, ReferenceArea,
+      Label, LabelList
+    } from "recharts";
+
+    // Namespace alias so code using `Recharts.BarChart` also works.
+    const Recharts = {
+      ResponsiveContainer, BarChart, Bar, LineChart, Line, AreaChart, Area,
+      PieChart, Pie, Cell, RadarChart, Radar, PolarGrid, PolarAngleAxis,
+      PolarRadiusAxis, ScatterChart, Scatter, ComposedChart, RadialBarChart,
+      RadialBar, Treemap, FunnelChart, Funnel, XAxis, YAxis, ZAxis,
+      CartesianGrid, Tooltip, Legend, Brush, ReferenceLine, ReferenceArea,
+      Label, LabelList,
+    };
+
+    // ── Data Bridge (protocol v1) ────────────────────────────────────
+    const BRIDGE_PROTOCOL_VERSION = 1;
+
+    const bridge = {
+      async query(tool, params) {
+        const id = crypto.randomUUID();
+        return new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            window.removeEventListener("message", handler);
+            reject(new Error("Bridge query timed out after 30s"));
+          }, 30000);
+          const handler = (e) => {
+            if (e.data?.id === id) {
+              clearTimeout(timeout);
+              window.removeEventListener("message", handler);
+              if (e.data.error) reject(new Error(e.data.error));
+              else resolve(e.data.result);
+            }
+          };
+          window.addEventListener("message", handler);
+          window.parent.postMessage(
+            { type: "presentation_query", v: BRIDGE_PROTOCOL_VERSION, id, tool, params },
+            "*"
+          );
+        });
+      },
+    };
+
+    // ── React Hooks ───────────────────────────────────────────────────
+    function useQuery(tool, params) {
+      const [state, setState] = useState({ data: null, loading: true, error: null });
+      const key = JSON.stringify([tool, params]);
+      useEffect(() => {
+        let cancelled = false;
+        setState({ data: null, loading: true, error: null });
+        bridge.query(tool, params)
+          .then((data) => { if (!cancelled) setState({ data, loading: false, error: null }); })
+          .catch((error) => { if (!cancelled) setState({ data: null, loading: false, error }); });
+        return () => { cancelled = true; };
+      }, [key]);
+      return state;
+    }
+
+    function useMultiQuery(queries) {
+      const [results, setResults] = useState({});
+      const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
+      const key = JSON.stringify(queries);
+      useEffect(() => {
+        let cancelled = false;
+        setLoading(true);
+        const entries = Object.entries(queries);
+        Promise.all(entries.map(([_, [tool, params]]) => bridge.query(tool, params)))
+          .then((values) => {
+            if (cancelled) return;
+            const obj = {};
+            entries.forEach(([k], i) => { obj[k] = values[i]; });
+            setResults(obj);
+            setLoading(false);
+          })
+          .catch((err) => { if (!cancelled) { setError(err); setLoading(false); } });
+        return () => { cancelled = true; };
+      }, [key]);
+      return { results, loading, error };
+    }
+
+    // ── Utility Components ────────────────────────────────────────────
+    function Skeleton({ className = "h-64", children }) {
+      return React.createElement("div", {
+        className: "animate-pulse bg-gray-800/50 rounded-xl " + className,
+      }, children);
+    }
+
+    function MetricCard({ label, value, subtitle, icon }) {
+      return React.createElement("div", { className: "bg-gray-900/50 backdrop-blur rounded-xl p-6 border border-gray-800" },
+        React.createElement("p", { className: "text-sm font-medium text-gray-400 uppercase tracking-wider" }, label),
+        React.createElement("p", { className: "text-3xl font-bold mt-1 tracking-tight" }, value),
+        subtitle && React.createElement("p", { className: "text-sm text-gray-500 mt-1" }, subtitle)
+      );
+    }
+
+    function ErrorCard({ message, onRetry }) {
+      return React.createElement("div", { className: "studio-error" },
+        React.createElement("p", { className: "font-medium" }, "Something went wrong"),
+        React.createElement("p", { className: "text-sm mt-1 text-red-300/80" }, String(message)),
+        onRetry && React.createElement("button", {
+          onClick: onRetry,
+          className: "mt-3 text-sm px-3 py-1 rounded bg-red-900/50 hover:bg-red-900/80 transition-colors",
+        }, "Retry")
+      );
+    }
+
+    function Section({ title, children, className = "" }) {
+      return React.createElement("section", { className: "space-y-4 " + className },
+        title && React.createElement("h2", { className: "text-xl font-semibold tracking-tight" }, title),
+        children
+      );
+    }
+
+    // ── Agent-Generated Code (injected at render time) ────────────────
+    /* __COMPONENT_CODE__ */
+
+    // ── Mount ─────────────────────────────────────────────────────────
+    const root = createRoot(document.getElementById("root"));
+    root.render(React.createElement(App));
+  </script>
+</body>
+</html>

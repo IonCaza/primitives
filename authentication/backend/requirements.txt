@@ -1,0 +1,9 @@
+bcrypt
+cryptography
+httpx
+PyJWT
+pyotp
+qrcode[pil]
+redis
+aiosmtplib
+jinja2

@@ -1,0 +1,9 @@
+{
+  "dependencies": {},
+  "devDependencies": {},
+  "notes": [
+    "No additional npm dependencies beyond those provided by agentic-ai-engine.",
+    "Requires @assistant-ui/react, @tanstack/react-query, and lucide-react from the parent primitive.",
+    "Assumes shadcn/ui components: Button, Card, Badge, Skeleton, Dialog, Input, Label, Textarea, DropdownMenu, Tooltip, ResizablePanel."
+  ]
+}

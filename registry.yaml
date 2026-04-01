@@ -17,3 +17,33 @@ primitives:
       Full observability stack with OpenTelemetry, Grafana, Tempo,
       Prometheus, Loki, and Langfuse for LLM tracing.
     status: active
+
+  - name: authentication
+    path: authentication/
+    description: >
+      Full-stack authentication with pluggable providers (local + OIDC/OAuth2),
+      multi-factor authentication (TOTP + email OTP + recovery codes), JWT tokens,
+      Fernet credential vaulting, admin user management, SMTP email delivery, and
+      complete React login/MFA/OIDC UI.
+    status: active
+
+  - name: presentation-studio
+    path: presentation-studio/
+    description: >
+      AI-powered presentation studio for generating interactive dashboards
+      from project data. Agent generates React component code rendered in a
+      sandboxed iframe with live data access via a PostMessage bridge.
+      Includes versioned HTML templates, a data proxy, color palette picker,
+      and full CRUD with version history. Requires agentic-ai-engine.
+    status: active
+
+  - name: cornerstone
+    path: cornerstone/
+    description: >
+      Foundational application scaffold providing monorepo structure,
+      Docker Compose orchestration (PostgreSQL + Redis + backend + frontend),
+      FastAPI + async SQLAlchemy + Alembic backend skeleton,
+      Next.js 16 + React 19 + Tailwind v4 + shadcn/ui frontend skeleton,
+      dev/prod Dockerfiles, API proxy, and environment management.
+      Root primitive with no dependencies -- all other primitives build on this.
+    status: active

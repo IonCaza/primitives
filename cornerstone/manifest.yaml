@@ -1,0 +1,89 @@
+name: cornerstone
+version: "1.0.0"
+description: >
+  Foundational application scaffold providing monorepo structure,
+  Docker Compose orchestration, FastAPI + async SQLAlchemy + Alembic backend,
+  Next.js 16 + React 19 + Tailwind v4 + shadcn/ui frontend, dev/prod Dockerfiles,
+  API proxy pattern, and environment variable management.
+  This is the root primitive -- all other primitives depend on it.
+
+stack:
+  backend: python 3.13, FastAPI, SQLAlchemy (async), Alembic, Pydantic Settings, Redis
+  frontend: Next.js 16, React 19, Tailwind CSS v4, shadcn/ui (new-york), pnpm
+  database: PostgreSQL 18 (pgvector), Redis 8
+  containerization: Docker, Docker Compose
+
+dependencies: []
+
+source_repos:
+  - url: git@github.com:IonCaza/contributr.git
+    commit: fab41bb728373d1087389b2a785a476b36730368
+  - url: git@github.com:IonCaza/uad36.git
+
+files:
+  config:
+    - config/docker-compose.yml
+    - config/docker-compose.dev.yml
+    - config/.env.example
+    - config/.gitignore
+    - config/Makefile
+  backend:
+    - backend/app/main.py
+    - backend/app/config.py
+    - backend/app/db/base.py
+    - backend/app/db/models/__init__.py
+    - backend/alembic.ini
+    - backend/alembic/env.py
+    - backend/alembic/script.py.mako
+    - backend/entrypoint.sh
+    - backend/Dockerfile
+    - backend/Dockerfile.dev
+    - backend/requirements.txt
+  frontend:
+    - frontend/package.json
+    - frontend/next.config.ts
+    - frontend/postcss.config.mjs
+    - frontend/components.json
+    - frontend/tsconfig.json
+    - frontend/src/app/globals.css
+    - frontend/src/app/layout.tsx
+    - frontend/src/app/page.tsx
+    - frontend/src/app/providers.tsx
+    - frontend/src/lib/theme-provider.tsx
+    - frontend/src/lib/query-client.ts
+    - frontend/src/lib/utils.ts
+    - frontend/src/lib/api-client.ts
+    - frontend/Dockerfile
+    - frontend/Dockerfile.dev
+
+extension_points:
+  - file: backend/app/main.py
+    what: Register API routers via app.include_router() and add lifespan startup hooks
+  - file: backend/app/db/models/__init__.py
+    what: Import new SQLAlchemy models so Alembic discovers them
+  - file: backend/app/config.py
+    what: Add application-specific Settings fields
+  - file: backend/requirements.txt
+    what: Add Python dependencies
+  - file: frontend/src/app/providers.tsx
+    what: Wrap additional context providers; replace AuthProvider stub with real implementation
+  - file: frontend/src/lib/api-client.ts
+    what: Add domain-specific API methods to the api object
+  - file: frontend/package.json
+    what: Add npm dependencies
+  - file: config/docker-compose.yml
+    what: Add services (workers, object storage, message queues, etc.)
+  - file: config/.env.example
+    what: Add environment variables for new features
+
+canonicalization:
+  app_name: "MyApp"
+  db_credentials: "myapp / myapp_secret / myapp"
+  notes:
+    - "All references use 'MyApp' as placeholder -- grep-and-replace on scaffold"
+    - "No domain logic, models, or routes beyond /api/health"
+    - "AuthProvider in providers.tsx is a pass-through stub (authentication primitive replaces it)"
+    - "api-client.ts exports request infrastructure but zero domain methods"
+    - "globals.css uses neutral shadcn base palette (no branded colors)"
+    - "db/base.py get_db includes auto-commit/rollback pattern (safer default)"
+    - "docker-compose.yml excludes workers, object storage, observability (separate primitives)"

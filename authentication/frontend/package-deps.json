@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "lucide-react": "latest"
+  },
+  "notes": "Assumes shadcn/ui components (Button, Card, Input, Label, Tabs, Separator, Dialog) are already installed. Also requires @tanstack/react-query for the useAuthProviders hook."
+}

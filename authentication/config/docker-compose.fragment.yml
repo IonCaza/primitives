@@ -1,0 +1,22 @@
+# Authentication Primitive - Required Infrastructure
+# Merge these services into your project's docker-compose.yml
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: myapp
+      POSTGRES_PASSWORD: myapp_secret
+      POSTGRES_DB: myapp
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:

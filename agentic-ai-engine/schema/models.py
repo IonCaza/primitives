@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     Float,
@@ -20,7 +21,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSON, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 # --- ADAPT THIS IMPORT to your project's declarative base ---
@@ -229,3 +230,63 @@ class Feedback(Base):
     agent_slug: Mapped[str | None] = mapped_column(String(100), nullable=True)
     session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+# ---------------------------------------------------------------------------
+# Task Items (structured task decomposition)
+# ---------------------------------------------------------------------------
+
+
+class TaskItem(Base):
+    __tablename__ = "task_items"
+
+    id: Mapped[str] = mapped_column(String(8), primary_key=True)
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chat_sessions.id", ondelete="CASCADE"), primary_key=True
+    )
+    subject: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    owner_agent_slug: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    blocked_by: Mapped[list[str] | None] = mapped_column(ARRAY(String), server_default="{}")
+    blocks: Mapped[list[str] | None] = mapped_column(ARRAY(String), server_default="{}")
+    metadata_: Mapped[dict | None] = mapped_column("metadata", JSON, server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','in_progress','completed','blocked','cancelled')",
+            name="ck_task_items_status",
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Agent Memories (structured long-term memory with taxonomy)
+# ---------------------------------------------------------------------------
+
+
+class AgentMemory(Base):
+    __tablename__ = "agent_memories"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False,
+    )
+    project_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    agent_slug: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(String(500), nullable=False)
+    type: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "type IN ('user', 'feedback', 'project', 'reference')",
+            name="ck_agent_memories_type",
+        ),
+    )

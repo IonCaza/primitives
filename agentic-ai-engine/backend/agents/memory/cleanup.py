@@ -70,8 +70,14 @@ async def cleanup_checkpoint(
     llm: "ChatLiteLLM",
     agent_config: "AgentConfig",
     provider: "LlmProvider",
+    *,
+    force: bool = False,
 ) -> None:
-    """Trim checkpoint messages if they exceed the context-window threshold."""
+    """Trim checkpoint messages if they exceed the context-window threshold.
+
+    When *force* is True the threshold check is skipped, evicting aggressively.
+    This is used by the reactive-recovery path after a prompt-too-long error.
+    """
     try:
         snapshot = await agent.aget_state(config)
     except Exception:
@@ -97,8 +103,11 @@ async def cleanup_checkpoint(
         count_tokens(model, m.content if isinstance(m.content, str) else str(m.content)) + 4
         for m in messages
     )
-    if total_tokens <= threshold:
+    if not force and total_tokens <= threshold:
         return
+
+    if force:
+        logger.warning("Emergency compaction triggered (force=True, %d tokens, %d messages)", total_tokens, len(messages))
 
     target_keep = max(4, len(messages) // 2)
     boundary = _find_safe_eviction_boundary(messages, target_keep)
@@ -113,16 +122,22 @@ async def cleanup_checkpoint(
         messages[boundary].type if boundary < len(messages) else "none",
     )
 
-    summary_limit = resolve_summary_limit(agent_config, ctx_window, settings.summary_token_ratio)
-    evicted_dicts = [_msg_to_dict(m) for m in evicted]
+    session_notes: str | None = snapshot.values.get("session_notes")
 
-    try:
-        new_summary = await summarize_messages(
-            llm, evicted_dicts, existing_summary, summary_limit,
-        )
-    except Exception:
-        logger.exception("Checkpoint summarization failed, keeping messages")
-        return
+    if session_notes:
+        new_summary = f"## Structured Session Notes\n{session_notes}"
+        logger.info("Using session notes as compaction summary (skipping LLM call)")
+    else:
+        summary_limit = resolve_summary_limit(agent_config, ctx_window, settings.summary_token_ratio)
+        evicted_dicts = [_msg_to_dict(m) for m in evicted]
+
+        try:
+            new_summary = await summarize_messages(
+                llm, evicted_dicts, existing_summary, summary_limit,
+            )
+        except Exception:
+            logger.exception("Checkpoint summarization failed, keeping messages")
+            return
 
     remove_ops = [RemoveMessage(id=m.id) for m in evicted if hasattr(m, "id") and m.id]
     update: dict = {"context_summary": new_summary}

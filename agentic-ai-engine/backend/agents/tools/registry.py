@@ -15,6 +15,7 @@ ToolFactory = Callable[[AsyncSession], list]
 _TOOL_FACTORIES: dict[str, ToolFactory] = {}
 _TOOL_DEFINITIONS: dict[str, ToolDefinition] = {}
 _SESSION_SAFE_CATEGORIES: set[str] = set()
+_CONCURRENCY_SAFE_CATEGORIES: set[str] = set()
 
 
 def register_tool_category(
@@ -23,12 +24,29 @@ def register_tool_category(
     factory: ToolFactory,
     *,
     session_safe: bool = False,
+    concurrency_safe: bool = False,
 ) -> None:
     _TOOL_FACTORIES[category] = factory
     for defn in definitions:
         _TOOL_DEFINITIONS[defn.slug] = defn
     if session_safe:
         _SESSION_SAFE_CATEGORIES.add(category)
+    if concurrency_safe:
+        _CONCURRENCY_SAFE_CATEGORIES.add(category)
+
+
+def is_tool_concurrency_safe(slug: str) -> bool:
+    """Check whether a tool can safely run concurrently with other tools.
+
+    Returns True if *either* the tool's definition is marked concurrency_safe
+    or its entire category is registered as concurrency-safe.
+    """
+    defn = _TOOL_DEFINITIONS.get(slug)
+    if not defn:
+        return False
+    if defn.concurrency_safe:
+        return True
+    return defn.category in _CONCURRENCY_SAFE_CATEGORIES
 
 
 def get_all_definitions() -> list[ToolDefinition]:

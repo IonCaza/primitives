@@ -14,6 +14,9 @@ from app.db.models.knowledge_graph import AgentKnowledgeGraphAssignment, Knowled
 #   import app.agents.tools.sql_query  # noqa: F401
 #   import app.agents.tools.my_domain_tools  # noqa: F401
 
+import app.agents.tools.task_tools  # noqa: F401
+import app.agents.tools.skill_tool  # noqa: F401
+
 
 async def is_ai_enabled(db: AsyncSession) -> bool:
     result = await db.execute(select(AiSettings).where(AiSettings.id == SINGLETON_ID))

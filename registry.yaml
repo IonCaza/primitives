@@ -47,3 +47,12 @@ primitives:
       dev/prod Dockerfiles, API proxy, and environment management.
       Root primitive with no dependencies -- all other primitives build on this.
     status: active
+
+  - name: async-jobs
+    path: async-jobs/
+    description: >
+      Celery-based async job execution pipeline with Redis-backed structured
+      logging, SSE real-time log streaming, cooperative cancellation, stale job
+      detection, and a terminal-style React log viewer with polling hooks.
+      Depends on cornerstone for base infrastructure (Redis, FastAPI, Next.js).
+    status: active

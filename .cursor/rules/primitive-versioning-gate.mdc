@@ -1,0 +1,37 @@
+---
+description: Enforces changelog and manifest version bumps after any primitive code change
+alwaysApply: true
+---
+
+# Primitive Versioning Gate
+
+**MANDATORY**: After editing ANY code file inside a primitive directory (`<name>/schema/`, `backend/`, `frontend/`, `config/`), you MUST complete the steps below before finishing your turn. No exceptions.
+
+## 1. Determine the version bump
+
+| Bump | When | Example |
+|------|------|---------|
+| **Patch** (0.0.+1) | Bug fix, internal refactor, no new exports or files | Fix session isolation in task_tools.py |
+| **Minor** (0.+1.0) | New file, tool, component, API endpoint, model, or feature | Add TaskItem model + task tools |
+| **Major** (+1.0.0) | Breaking change: removed/renamed export, changed schema requiring migration on existing consumers, changed function signature | Rename `build_task_tools` to `create_task_toolset` |
+
+## 2. Update files (in this order)
+
+1. **`manifest.yaml`** -- bump `version`. Update `provides` if models/routes/components changed.
+2. **`CHANGELOG.md`** -- new entry at the top:
+   ```
+   ## [X.Y.Z] - YYYY-MM-DD
+   ### Added/Changed/Fixed/Removed
+   - Description of change
+     (files: relative/path/to/file.py, other/file.tsx)
+   ### Migration notes     <-- only if consumers need to act
+   - What consumers must do
+   ```
+   Every bullet MUST list affected files in parentheses.
+3. **`INTEGRATION.md`** -- update ONLY if the change affects integration steps (new deps, new env vars, changed imports, new setup hooks).
+
+## What does NOT trigger this gate
+
+- Editing `CHANGELOG.md`, `manifest.yaml`, or `INTEGRATION.md` themselves
+- Editing repo-level files: `registry.yaml`, `templates/`, `.cursor/`
+- Read-only exploration (no file writes)

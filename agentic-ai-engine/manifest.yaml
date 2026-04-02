@@ -1,5 +1,5 @@
 name: agentic-ai-engine
-version: "1.0.0"
+version: "1.8.1"
 description: >
   Full-stack multi-agent AI engine with LangGraph supervisor pattern,
   DB-driven agent configuration, 3-tier memory (checkpoint + summarization +
@@ -27,6 +27,9 @@ provides:
     - ChatMessage
     - AgentActivity
     - Feedback
+    - TaskItem
+    - AgentMemory
+    - AgentSkill
   api_routes:
     - { path: "/api/v1/chat", methods: [POST, GET, PATCH, DELETE], description: "SSE streaming chat + session CRUD" }
     - { path: "/api/v1/agents", methods: [GET, POST, PUT, DELETE], description: "Agent configuration CRUD" }
@@ -36,8 +39,9 @@ provides:
     - { path: "/api/v1/knowledge-graphs", methods: [GET, POST, PUT, DELETE], description: "Knowledge graph CRUD" }
   frontend_components:
     - ChatRuntime (SSE adapter bridging assistant-ui to the backend)
-    - ChatPanel (resizable panel with thread list + agent activity)
+    - ChatPanel (resizable panel with thread list + agent activity + task board)
     - AgentActivityPanel (live + historical delegation tracking)
+    - TaskBoardPanel (live task board with progress tracking)
     - Thread, MarkdownText, ToolFallback, ThreadList (assistant-ui components)
 
 extension_points:

@@ -1,0 +1,85 @@
+name: async-jobs
+version: "1.0.0"
+description: >
+  Celery-based async job execution pipeline with Redis-backed structured logging,
+  SSE real-time log streaming, cooperative cancellation, stale job detection,
+  and a terminal-style React log viewer with polling hooks.
+
+stack:
+  backend: python/fastapi
+  frontend: react/nextjs
+  persistence: postgresql/sqlalchemy
+  broker: redis/celery
+  streaming: sse-starlette
+
+dependencies:
+  - cornerstone
+
+provides:
+  models:
+    - Job
+    - JobEvent
+  enums:
+    - JobStatus (queued, running, completed, failed, cancelled)
+  backend_modules:
+    - workers/celery_app.py
+    - workers/base.py
+    - workers/example_task.py
+    - services/job_logger.py
+    - api/jobs.py
+  frontend_components:
+    - components/job-log-viewer.tsx (JobLogViewer, ViewLogsButton)
+    - components/job-status-badge.tsx (JobStatusBadge)
+  frontend_hooks:
+    - hooks/use-jobs.ts (useJobs, useJob, useJobEvents, useCreateJob, useCancelJob)
+  api_routes:
+    - POST   /api/jobs             (create + dispatch)
+    - GET    /api/jobs              (list, filter by type/status)
+    - GET    /api/jobs/{id}         (detail)
+    - POST   /api/jobs/{id}/cancel  (cooperative cancel)
+    - GET    /api/jobs/{id}/events  (persisted events)
+    - GET    /api/jobs/{id}/logs    (SSE stream)
+  infrastructure:
+    - docker-compose fragment (celery-worker, celery-beat services)
+
+extension_points:
+  task_definitions: >
+    The example_task.py shows the canonical pattern. Replace or extend with
+    domain-specific tasks. Each task is a @celery.task sync wrapper calling
+    asyncio.run() with a JobTask base class for crash recovery.
+  phase_colors: >
+    JobLogViewer accepts a phaseColors prop to extend or override the default
+    phase-to-color mapping for domain-specific job phases.
+  job_types: >
+    The Job model's job_type field is a free-form string. Define your own
+    job types (e.g., "sync", "scan", "deploy") and dispatch to different
+    Celery tasks based on the type in the create_job endpoint.
+  queue_routing: >
+    The celery_app.py uses a single default queue. For multi-site or priority
+    routing, add task_default_queue and use .apply_async(queue=...) dispatch.
+  beat_schedule: >
+    Add periodic tasks to the beat_schedule dict in celery_app.py. Use
+    crontab() for time-of-day scheduling or float for interval-based.
+  auth_for_sse: >
+    The SSE endpoint stubs out JWT validation. Uncomment and adapt the
+    decode_token import to match your auth primitive.
+
+extracted_from:
+  - repo: contributr
+    commit: fab41bb728373d1087389b2a785a476b36730368
+    date: "2026-03-31"
+  - repo: updatr
+    commit: 7f64e9ca69acbf40c6b2c855e37446ec60b877c4
+    date: "2026-03-31"
+
+canonicalization_notes:
+  - "Renamed SyncLogger -> JobLogger, SyncLogViewer -> JobLogViewer"
+  - "Redis keys: sync:logs:{id} -> job:logs:{id}, sync:logs:live:{id} -> job:logs:live:{id}"
+  - "Adopted contributr's dual Redis list+pub/sub pattern (replay + live) over updatr's pub/sub-only"
+  - "Adopted sse-starlette EventSourceResponse over updatr's raw StreamingResponse"
+  - "Unified Job model with job_type field instead of per-type models (contributr) or plain strings (updatr)"
+  - "Status enum: superset of both apps (queued/running/completed/failed/cancelled)"
+  - "Phase colors are generic (fetch/process/validate/transform/persist/finalize) instead of domain-specific"
+  - "React Query hooks with conditional polling (contributr pattern) over raw setInterval (updatr)"
+  - "Stripped domain-specific: git/ansible logic, host routing, wave orchestration"
+  - "Added JobEvent model combining contributr's timestamped log entries with updatr's persisted events"

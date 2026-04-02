@@ -10,15 +10,22 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.base import build_agent
+from app.agents.context import current_session_id, current_user_id
+from app.agents.coordinator import build_coordinator
 from app.agents.llm.manager import build_llm_from_provider
 from app.agents.memory.cleanup import cleanup_checkpoint
 from app.agents.memory.extraction import extract_memories
+from app.agents.memory.recall import recall_relevant_memories, format_recalled_for_prompt
+from app.agents.skills import load_active_skills
+from app.agents.memory.consolidation import maybe_consolidate
+from app.agents.memory.session_notes import load_session_notes, maybe_update_session_notes
 from app.agents.memory.tools import build_memory_tools
 from app.agents.settings_cache import get_memory_settings
 from app.agents.supervisor import build_delegation_tools
 from app.agents.registry import is_ai_enabled, get_agent_by_slug
 from app.agents.tools.chat_history import build_search_chat_history_tool
 from app.agents.tools.feedback_gap import build_report_capability_gap_tool
+from app.agents.tools.task_tools import build_task_tools
 from app.db.models.llm_provider import LlmProvider
 
 logger = logging.getLogger(__name__)
@@ -76,6 +83,7 @@ async def run_agent_stream(
     if session_id is not None:
         extra_tools.append(build_search_chat_history_tool(session_id))
         extra_tools.append(build_report_capability_gap_tool(session_id, agent_slug))
+        extra_tools.extend(build_task_tools(db, session_id))
     if user_id is not None and mem_settings.memory_enabled:
         extra_tools.extend(build_memory_tools(user_id))
 
@@ -92,14 +100,45 @@ async def run_agent_stream(
                 [m.slug for m in member_agents],
             )
 
-    agent, max_iterations = build_agent(
-        agent_config, provider, db, extra_tools=extra_tools,
-    )
+    current_user_id.set(user_id)
+    current_session_id.set(session_id)
+
+    recalled_context = ""
+    if user_id and mem_settings.memory_enabled:
+        try:
+            recall_llm = build_llm_from_provider(provider, streaming=False)
+            recalled = await recall_relevant_memories(db, user_id, user_input, recall_llm)
+            recalled_context = format_recalled_for_prompt(recalled)
+            if recalled_context:
+                logger.info("Recalled %d memories for user %s", len(recalled), user_id)
+        except Exception:
+            logger.debug("Memory recall pre-flight failed (non-critical)", exc_info=True)
+
+    skill_context = ""
+    try:
+        skill_context = await load_active_skills(agent_slug, db)
+        if skill_context:
+            logger.info("Loaded skills for agent %s", agent_slug)
+    except Exception:
+        logger.debug("Skill loading failed (non-critical)", exc_info=True)
+
+    if is_supervisor:
+        agent, max_iterations = build_coordinator(
+            agent_config, provider, db, extra_tools=extra_tools,
+            recalled_context=recalled_context,
+            skill_context=skill_context,
+        )
+    else:
+        agent, max_iterations = build_agent(
+            agent_config, provider, db, extra_tools=extra_tools,
+            recalled_context=recalled_context,
+            skill_context=skill_context,
+        )
 
     thread_id = str(session_id) if session_id else str(uuid.uuid4())
     run_config = {
         "configurable": {"thread_id": thread_id},
-        "recursion_limit": (max_iterations or 25) * 2,
+        "recursion_limit": (max_iterations or (50 if is_supervisor else 25)) * 2,
     }
 
     try:
@@ -134,99 +173,141 @@ async def run_agent_stream(
     except Exception:
         logger.debug("Pre-flight checkpoint repair skipped", exc_info=True)
 
+    notes_cursor = 0
+    existing_notes: str | None = None
+    if session_id:
+        try:
+            existing_notes, notes_cursor = await load_session_notes(session_id)
+            if existing_notes:
+                await agent.aupdate_state(run_config, {"session_notes": existing_notes})
+        except Exception:
+            logger.debug("Session notes pre-load failed (non-critical)", exc_info=True)
+
     active_delegations: dict[str, dict[str, str]] = {}
     _PRES_TOOLS = {"save_presentation", "update_presentation"}
+    _TASK_TOOLS = {"create_task", "update_task"}
     pending_pres_ids: dict[str, str] = {}
     collected = ""
     pending_separator = False
 
-    async for event in agent.astream_events(
-        {"messages": [HumanMessage(content=user_input)]},
-        version="v2",
-        config=run_config,
-    ):
-        kind = event["event"]
-        name = event.get("name", "")
-        run_id = event.get("run_id", "")
-        parent_ids: list[str] = event.get("parent_ids", [])
+    stream_input = {"messages": [HumanMessage(content=user_input)]}
 
-        if kind == "on_tool_start" and name.startswith(DELEGATION_PREFIX):
-            slug = name[len(DELEGATION_PREFIX):].replace("_", "-")
-            active_delegations[run_id] = {"slug": slug}
-            yield {"type": "agent_start", "run_id": run_id, "slug": slug}
+    async def _consume_stream(attempt: int = 1):
+        nonlocal collected, pending_separator
+        async for event in agent.astream_events(
+            stream_input,
+            version="v2",
+            config=run_config,
+        ):
+            kind = event["event"]
+            name = event.get("name", "")
+            run_id = event.get("run_id", "")
+            parent_ids: list[str] = event.get("parent_ids", [])
 
-        elif kind == "on_tool_start" and name in _PRES_TOOLS:
-            tool_input = event.get("data", {}).get("input", {})
-            pid = tool_input.get("presentation_id", "") if isinstance(tool_input, dict) else ""
-            if pid:
-                pending_pres_ids[run_id] = pid
+            if kind == "on_tool_start" and name.startswith(DELEGATION_PREFIX):
+                slug = name[len(DELEGATION_PREFIX):].replace("_", "-")
+                active_delegations[run_id] = {"slug": slug}
+                yield {"type": "agent_start", "run_id": run_id, "slug": slug}
 
-        elif kind == "on_tool_end" and name.startswith(DELEGATION_PREFIX):
-            info = active_delegations.pop(run_id, None)
-            if info:
-                yield {"type": "agent_done", "run_id": run_id}
-            if collected:
-                pending_separator = True
+            elif kind == "on_tool_start" and name in _PRES_TOOLS:
+                tool_input = event.get("data", {}).get("input", {})
+                pid = tool_input.get("presentation_id", "") if isinstance(tool_input, dict) else ""
+                if pid:
+                    pending_pres_ids[run_id] = pid
 
-        elif kind == "on_tool_end" and name in _PRES_TOOLS:
-            tool_output = str(event.get("data", {}).get("output", ""))
-            pres_id = None
-            if "ID:" in tool_output:
-                pres_id = tool_output.split("ID:")[1].strip().split()[0]
-            if not pres_id:
-                pres_id = pending_pres_ids.pop(run_id, None)
-            if pres_id and not tool_output.startswith("Error:"):
-                yield {"type": "presentation_update", "presentation_id": pres_id}
-            if collected:
-                pending_separator = True
+            elif kind == "on_tool_end" and name.startswith(DELEGATION_PREFIX):
+                info = active_delegations.pop(run_id, None)
+                if info:
+                    yield {"type": "agent_done", "run_id": run_id}
+                if collected:
+                    pending_separator = True
 
-        elif kind == "on_tool_end":
-            if collected:
-                pending_separator = True
+            elif kind == "on_tool_end" and name in _PRES_TOOLS:
+                tool_output = str(event.get("data", {}).get("output", ""))
+                pres_id = None
+                if "ID:" in tool_output:
+                    pres_id = tool_output.split("ID:")[1].strip().split()[0]
+                if not pres_id:
+                    pres_id = pending_pres_ids.pop(run_id, None)
+                if pres_id and not tool_output.startswith("Error:"):
+                    yield {"type": "presentation_update", "presentation_id": pres_id}
+                if collected:
+                    pending_separator = True
 
-        elif kind == "on_chat_model_stream":
-            chunk = event["data"]["chunk"]
-            content = getattr(chunk, "content", "")
+            elif kind == "on_tool_end" and name in _TASK_TOOLS:
+                yield {"type": "task_update", "session_id": str(session_id)}
+                if collected:
+                    pending_separator = True
 
-            thinking_text = ""
-            text_content = ""
+            elif kind == "on_tool_end":
+                if collected:
+                    pending_separator = True
 
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "thinking":
-                            thinking_text += block.get("thinking", "")
-                        else:
-                            text_content += block.get("text", "")
-                    elif isinstance(block, str):
-                        text_content += block
-            elif isinstance(content, str):
-                text_content = content
+            elif kind == "on_chat_model_stream":
+                chunk = event["data"]["chunk"]
+                content = getattr(chunk, "content", "")
 
-            if not thinking_text and not text_content:
-                continue
+                thinking_text = ""
+                text_content = ""
 
-            child_run = next(
-                (pid for pid in parent_ids if pid in active_delegations),
-                None,
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "thinking":
+                                thinking_text += block.get("thinking", "")
+                            else:
+                                text_content += block.get("text", "")
+                        elif isinstance(block, str):
+                            text_content += block
+                elif isinstance(content, str):
+                    text_content = content
+
+                if not thinking_text and not text_content:
+                    continue
+
+                child_run = next(
+                    (pid for pid in parent_ids if pid in active_delegations),
+                    None,
+                )
+
+                if thinking_text:
+                    if child_run:
+                        yield {"type": "agent_token", "run_id": child_run, "content": thinking_text}
+                    else:
+                        yield {"type": "thinking", "content": thinking_text}
+
+                if text_content:
+                    if child_run:
+                        yield {"type": "agent_token", "run_id": child_run, "content": text_content}
+                    else:
+                        if pending_separator:
+                            collected += "\n\n"
+                            yield {"type": "token", "content": "\n\n"}
+                            pending_separator = False
+                        collected += text_content
+                        yield {"type": "token", "content": text_content}
+
+    try:
+        async for ev in _consume_stream(attempt=1):
+            yield ev
+    except Exception as exc:
+        err_str = str(exc).lower()
+        is_prompt_too_long = ("prompt" in err_str or "context" in err_str) and (
+            "long" in err_str or "token" in err_str or "length" in err_str or "exceed" in err_str
+        )
+        if is_prompt_too_long:
+            logger.warning("Prompt too long -- attempting emergency compaction and retry")
+            emergency_llm = build_llm_from_provider(provider, streaming=False)
+            await cleanup_checkpoint(
+                agent, run_config, emergency_llm, agent_config, provider, force=True,
             )
-
-            if thinking_text:
-                if child_run:
-                    yield {"type": "agent_token", "run_id": child_run, "content": thinking_text}
-                else:
-                    yield {"type": "thinking", "content": thinking_text}
-
-            if text_content:
-                if child_run:
-                    yield {"type": "agent_token", "run_id": child_run, "content": text_content}
-                else:
-                    if pending_separator:
-                        collected += "\n\n"
-                        yield {"type": "token", "content": "\n\n"}
-                        pending_separator = False
-                    collected += text_content
-                    yield {"type": "token", "content": text_content}
+            try:
+                async for ev in _consume_stream(attempt=2):
+                    yield ev
+            except Exception:
+                logger.exception("Retry after emergency compaction also failed")
+        else:
+            logger.exception("Unhandled error during agent streaming")
 
     if not collected:
         try:
@@ -252,6 +333,19 @@ async def run_agent_stream(
             yield {"type": "token", "content": collected}
 
     llm = build_llm_from_provider(provider, streaming=False)
+
+    if session_id:
+        try:
+            post_snapshot = await agent.aget_state(run_config)
+            post_msgs = post_snapshot.values.get("messages", []) if post_snapshot and post_snapshot.values else []
+            updated_notes = await maybe_update_session_notes(
+                session_id, post_msgs, existing_notes, notes_cursor, llm,
+            )
+            if updated_notes:
+                await agent.aupdate_state(run_config, {"session_notes": updated_notes})
+        except Exception:
+            logger.debug("Session notes update failed (non-critical)", exc_info=True)
+
     await cleanup_checkpoint(agent, run_config, llm, agent_config, provider)
 
     if user_id and collected and mem_settings.memory_enabled and mem_settings.extraction_enabled:
@@ -260,3 +354,4 @@ async def run_agent_stream(
             {"role": "assistant", "content": collected},
         ]
         asyncio.create_task(extract_memories(user_id, turn_msgs))
+        asyncio.create_task(maybe_consolidate(user_id, llm))

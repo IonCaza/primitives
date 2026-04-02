@@ -1,13 +1,14 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { Bot, ChevronDown, GripVertical, PanelRightOpen } from "lucide-react";
+import { Bot, ChevronDown, ClipboardList, GripVertical, PanelRightOpen, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Thread } from "@/components/assistant-ui/thread";
 import { ThreadList } from "@/components/assistant-ui/thread-list";
-import { ChatRuntime, useChildAgentActivity } from "@/components/chat-runtime";
+import { ChatRuntime, useChildAgentActivity, useTaskBoard } from "@/components/chat-runtime";
 import { AgentActivityPanel } from "@/components/agent-activity-panel";
+import { TaskBoardPanel } from "@/components/task-board-panel";
 import { useAgents } from "@/hooks/use-settings";
 import { useComposerRuntime } from "@assistant-ui/react";
 import { useChatTrigger } from "@/hooks/use-chat-trigger";
@@ -25,11 +26,22 @@ const MIN_ACTIVITY_PCT = 20;
 const MAX_ACTIVITY_PCT = 70;
 const DEFAULT_ACTIVITY_PCT = 50;
 
+type PanelTab = "activity" | "tasks";
+
 function ChatPanelInner() {
   const { activityVisible, setActivityVisible } = useChildAgentActivity();
+  const { updateCounter } = useTaskBoard();
   const [activityPct, setActivityPct] = useState(DEFAULT_ACTIVITY_PCT);
+  const [panelTab, setPanelTab] = useState<PanelTab>("activity");
   const containerRef = useRef<HTMLDivElement>(null);
   const dragging = useRef(false);
+
+  useEffect(() => {
+    if (updateCounter > 0 && !activityVisible) {
+      setActivityVisible(true);
+      setPanelTab("tasks");
+    }
+  }, [updateCounter, activityVisible, setActivityVisible]);
 
   const toggleActivity = useCallback(() => {
     setActivityVisible(!activityVisible);
@@ -102,13 +114,39 @@ function ChatPanelInner() {
           </div>
         )}
 
-        {/* Activity panel */}
+        {/* Side panel (activity or tasks) */}
         {activityVisible && (
           <div
-            className="min-w-0 min-h-0 overflow-hidden"
+            className="flex min-w-0 min-h-0 flex-col overflow-hidden"
             style={{ width: `${activityPct}%` }}
           >
-            <AgentActivityPanel onCollapse={toggleActivity} />
+            <div className="flex h-8 shrink-0 items-center border-b px-1">
+              <Button
+                variant={panelTab === "activity" ? "secondary" : "ghost"}
+                size="sm"
+                className="h-6 gap-1 px-2 text-[11px]"
+                onClick={() => setPanelTab("activity")}
+              >
+                <Users className="h-3 w-3" />
+                Agents
+              </Button>
+              <Button
+                variant={panelTab === "tasks" ? "secondary" : "ghost"}
+                size="sm"
+                className="h-6 gap-1 px-2 text-[11px]"
+                onClick={() => setPanelTab("tasks")}
+              >
+                <ClipboardList className="h-3 w-3" />
+                Tasks
+              </Button>
+            </div>
+            <div className="min-h-0 flex-1">
+              {panelTab === "activity" ? (
+                <AgentActivityPanel onCollapse={toggleActivity} />
+              ) : (
+                <TaskBoardPanel onCollapse={toggleActivity} />
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -136,12 +174,39 @@ function ChatAutoSender({ message }: { message: string | null }) {
   return null;
 }
 
+const DEFAULT_AGENT_KEY = "ai-engine:defaultAgent";
+
+function readDefaultAgent(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(DEFAULT_AGENT_KEY);
+}
+
+function persistDefaultAgent(slug: string) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(DEFAULT_AGENT_KEY, slug);
+}
+
 export function ChatPanel({ open, onClose }: ChatPanelProps) {
   const { data: agents = [] } = useAgents();
   const enabledAgents = agents.filter((a) => a.enabled);
-  const [agentSlug, setAgentSlug] = useState("contribution-analyst");
+  const [agentSlug, setAgentSlug] = useState(() => readDefaultAgent() ?? "assistant");
   const { pending, consume } = useChatTrigger();
   const [autoMessage, setAutoMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!enabledAgents.length) return;
+    const match = enabledAgents.find((a) => a.slug === agentSlug);
+    if (!match) {
+      const stored = readDefaultAgent();
+      const fallback = enabledAgents.find((a) => a.slug === stored) ?? enabledAgents[0];
+      setAgentSlug(fallback.slug);
+    }
+  }, [enabledAgents, agentSlug]);
+
+  const handleAgentChange = useCallback((slug: string) => {
+    setAgentSlug(slug);
+    persistDefaultAgent(slug);
+  }, []);
 
   useEffect(() => {
     if (!open || !pending) return;
@@ -165,7 +230,7 @@ export function ChatPanel({ open, onClose }: ChatPanelProps) {
             <div className="flex items-center gap-2">
               <Bot className="h-4 w-4 text-primary" />
               {enabledAgents.length > 1 ? (
-                <Select value={agentSlug} onValueChange={setAgentSlug}>
+                <Select value={agentSlug} onValueChange={handleAgentChange}>
                   <SelectTrigger className="h-7 w-auto border-0 bg-transparent py-0 px-1.5 text-sm font-semibold shadow-none focus:ring-0">
                     <SelectValue />
                   </SelectTrigger>

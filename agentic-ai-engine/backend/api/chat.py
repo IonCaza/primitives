@@ -18,6 +18,7 @@ from app.db.models.chat import ChatSession, ChatMessage, MessageRole
 from app.db.models.agent_activity import AgentActivity
 from app.db.models.ai_settings import AiSettings, SINGLETON_ID
 from app.db.models.agent_config import AgentConfig
+from app.db.models.task_item import TaskItem
 from app.db.models.user import User
 from app.agents.runner import run_agent_stream
 
@@ -215,6 +216,8 @@ async def send_message(
                     yield {"event": "agent_done", "data": json.dumps({"run_id": evt["run_id"]})}
                 elif etype == "presentation_update":
                     yield {"event": "presentation_update", "data": json.dumps({"presentation_id": evt["presentation_id"]})}
+                elif etype == "task_update":
+                    yield {"event": "task_update", "data": json.dumps({"session_id": evt["session_id"]})}
             yield {"event": "done", "data": json.dumps({"content": collected})}
         except Exception as exc:
             logger.exception("Agent streaming error")
@@ -417,3 +420,34 @@ async def delete_session(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
     await db.delete(session)
     await db.commit()
+
+
+class TaskItemOut(BaseModel):
+    id: str
+    subject: str
+    description: str | None = None
+    status: str
+    owner_agent_slug: str | None = None
+    blocked_by: list[str] = []
+    blocks: list[str] = []
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+@router.get("/sessions/{session_id}/tasks", response_model=list[TaskItemOut])
+async def get_session_tasks(
+    session_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    sess = (await db.execute(
+        select(ChatSession).where(ChatSession.id == session_id, ChatSession.user_id == user.id)
+    )).scalar_one_or_none()
+    if not sess:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
+
+    tasks = (await db.scalars(
+        select(TaskItem).where(TaskItem.session_id == session_id).order_by(TaskItem.id)
+    )).all()
+    return [TaskItemOut.model_validate(t) for t in tasks]

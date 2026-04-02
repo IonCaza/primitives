@@ -70,6 +70,26 @@ export function useChildAgentActivity() {
   return useContext(ChildAgentContext);
 }
 
+/* ------------------------------------------------------------------ */
+/*  Task board context (consumed by TaskBoardPanel)                    */
+/* ------------------------------------------------------------------ */
+
+interface TaskBoardContextValue {
+  /** Current session ID for fetching tasks. */
+  sessionId: string | undefined;
+  /** Monotonic counter bumped on each task_update SSE event. */
+  updateCounter: number;
+}
+
+const TaskBoardContext = createContext<TaskBoardContextValue>({
+  sessionId: undefined,
+  updateCounter: 0,
+});
+
+export function useTaskBoard() {
+  return useContext(TaskBoardContext);
+}
+
 export type AgentEventCallback = (
   event: string,
   data: Record<string, string>,
@@ -161,7 +181,8 @@ function makeChatModelAdapter(
                 currentEvent === "agent_start" ||
                 currentEvent === "agent_token" ||
                 currentEvent === "agent_done" ||
-                currentEvent === "presentation_update"
+                currentEvent === "presentation_update" ||
+                currentEvent === "task_update"
               ) {
                 onAgentEvent.current?.(currentEvent, data);
               } else if (currentEvent === "error") {
@@ -398,6 +419,8 @@ export function ChatRuntime({ children, agentSlug, onPresentationUpdate, message
   const [activityVisible, setActivityVisible] = useState(false);
   const [livePrompt, setLivePrompt] = useState("");
   const activeCountRef = useRef(0);
+  const [taskUpdateCounter, setTaskUpdateCounter] = useState(0);
+  const [currentSessionId, setCurrentSessionId] = useState<string | undefined>(undefined);
 
   const clearLive = useCallback(() => {
     setLiveAgentMap(new Map());
@@ -444,6 +467,9 @@ export function ChatRuntime({ children, agentSlug, onPresentationUpdate, message
       });
     } else if (event === "presentation_update" && data.presentation_id) {
       onPresentationUpdate?.(data.presentation_id);
+    } else if (event === "task_update") {
+      setCurrentSessionId(sessionIdRef.current);
+      setTaskUpdateCounter((c) => c + 1);
     }
   };
 
@@ -464,6 +490,8 @@ export function ChatRuntime({ children, agentSlug, onPresentationUpdate, message
     clearLive();
     setHistoricalActivities([]);
     setActivityVisible(false);
+    setCurrentSessionId(sessionIdRef.current);
+    setTaskUpdateCounter(0);
   };
 
   const messageTransformRef = useRef<((text: string) => string) | undefined>(undefined);
@@ -488,11 +516,18 @@ export function ChatRuntime({ children, agentSlug, onPresentationUpdate, message
     adapter: threadListAdapter,
   });
 
+  const taskBoardValue = useMemo<TaskBoardContextValue>(
+    () => ({ sessionId: currentSessionId, updateCounter: taskUpdateCounter }),
+    [currentSessionId, taskUpdateCounter],
+  );
+
   return (
     <ChildAgentContext.Provider value={ctxValue}>
-      <AssistantRuntimeProvider runtime={runtime}>
-        {children}
-      </AssistantRuntimeProvider>
+      <TaskBoardContext.Provider value={taskBoardValue}>
+        <AssistantRuntimeProvider runtime={runtime}>
+          {children}
+        </AssistantRuntimeProvider>
+      </TaskBoardContext.Provider>
     </ChildAgentContext.Provider>
   );
 }

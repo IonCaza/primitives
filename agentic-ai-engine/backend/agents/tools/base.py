@@ -9,3 +9,4 @@ class ToolDefinition:
     name: str
     description: str
     category: str
+    concurrency_safe: bool = False

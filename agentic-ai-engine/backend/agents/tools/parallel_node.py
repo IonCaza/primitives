@@ -73,14 +73,10 @@ class ParallelToolNode(ToolNode):
         config: Any = None,
         **kwargs: Any,
     ) -> Any:
-        tool_calls, output_type = self._parse_input(input, store=kwargs.get("store"))
+        tool_calls, input_type = self._parse_input(input, store=kwargs.get("store"))
 
         if not tool_calls:
-            if output_type == "list":
-                return []
-            elif output_type == "dict":
-                return {self.messages_key: []}
-            return output_type(messages=[])
+            return self._combine_tool_outputs([], input_type)
 
         batches = _partition_tool_calls(tool_calls)
         results: list[ToolMessage] = []
@@ -96,15 +92,11 @@ class ParallelToolNode(ToolNode):
         for batch in batches:
             if batch.concurrent and len(batch.calls) > 1:
                 batch_results = await asyncio.gather(
-                    *[self._arun_one(tc, config) for tc in batch.calls]
+                    *[self._arun_one(tc, input_type, config) for tc in batch.calls]
                 )
                 results.extend(batch_results)
             else:
                 for tc in batch.calls:
-                    results.append(await self._arun_one(tc, config))
+                    results.append(await self._arun_one(tc, input_type, config))
 
-        if output_type == "list":
-            return results
-        elif output_type == "dict":
-            return {self.messages_key: results}
-        return output_type(messages=results)
+        return self._combine_tool_outputs(results, input_type)

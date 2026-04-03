@@ -2,6 +2,114 @@
 
 All notable changes to the agentic-ai-engine primitive will be documented here.
 
+## [1.9.5] - 2026-04-02
+### Fixed
+- Thread-switch pane clearing now hooks into assistant-ui correctly.
+  Added `ThreadSwitchDetector` component rendered inside
+  `AssistantRuntimeProvider` that uses `useThreadListItem` (assistant-
+  ui's own hook) to subscribe to `remoteId` changes. When the active
+  thread changes, the detector calls `onThreadSwitch` to clear all
+  pane state. Previous approaches that relied on `useEffect` in the
+  `runtimeHook` or state updates from `initialize()` failed because
+  `unstable_useRemoteThreadListRuntime` does not propagate those
+  changes back through React's standard rendering pipeline.
+  (files: frontend/components/chat-runtime.tsx)
+
+## [1.9.4] - 2026-04-02
+### Fixed
+- Clear panel state directly from `initialize()` in the thread list
+  adapter. This is the one function that **always** executes when the
+  user clicks "New Thread". Previous approaches relied on `useEffect`
+  in `RuntimeHook` detecting a `remoteId` change, but
+  `unstable_useRemoteThreadListRuntime` may not propagate that change
+  back to the parent component's render cycle, so the effect never
+  fires and stale data from the previous thread persists.
+  `onThreadSwitchRef` is now passed to `useThreadListAdapter` and
+  called from `initialize()` after setting the new session ID.
+  (files: frontend/components/chat-runtime.tsx)
+
+## [1.9.3] - 2026-04-02
+### Fixed
+- Defence-in-depth fix for thread-switch pane clearing. The v1.9.2
+  staleness guard alone was insufficient because
+  `unstable_useRemoteThreadListRuntime` does not reliably fire the
+  `useEffect` in `RuntimeHook` on every thread switch. New approach:
+  `panelSessionRef` tracks which session the panel state belongs to;
+  `ensureSessionClean()` (cheap ref comparison) resets all pane state
+  on mismatch. Called from three independent checkpoints: a post-render
+  `useEffect` (catches the switch even if `onThreadSwitch` never fires),
+  `onRunStart` (catches it when the user sends the first message), and
+  `onAgentEvent` (catches it when the first SSE event arrives).
+  (files: frontend/components/chat-runtime.tsx)
+
+## [1.9.2] - 2026-04-02
+### Fixed
+- Thread switch now correctly clears Agents, Tasks, and Console panes.
+  A stale-load race condition allowed the previous thread's `load()`
+  callback to repopulate state via refs after `onThreadSwitch` had
+  already cleared it. Added a `sessionIdRef` guard in
+  `useHistoryAdapter` to discard results when the active session has
+  changed since the fetch began.
+  (files: frontend/components/chat-runtime.tsx)
+
+## [1.9.1] - 2026-04-02
+### Fixed
+- `create_task` tool no longer rejects `blocked_by` forward-references
+  when tasks are created in parallel batches via `ParallelToolNode`;
+  validation downgraded from hard error to debug log since `list_tasks`
+  and `get_task` already handle missing blocker refs gracefully.
+  (files: backend/agents/tools/task_tools.py)
+
+## [1.9.0] - 2026-04-02
+### Added
+- **ConsolePanel** frontend component: live + historical visualization
+  of tool calls (with expandable args/results, duration badges, error
+  highlighting) and thinking blocks, grouped by triggering user message.
+  (files: frontend/components/console-panel.tsx)
+- **Console state in ChatRuntime**: `LiveConsoleEntry`, `ConsoleGroup`
+  types exported; `ChildAgentContextValue` now includes
+  `liveConsoleEntries`, `historicalConsole`, and `sessionIdRef`;
+  SSE routing for `tool_call_start`, `tool_call_end`, `thinking` events
+  populates console state alongside the existing chat display;
+  `buildConsoleGroups()` loads historical console from message history.
+  (files: frontend/components/chat-runtime.tsx)
+
+### Changed
+- **ChatPanel** side panel now has three tabs — Agents, Tasks, Console —
+  giving equal visibility to agent delegation, task decomposition, and
+  tool/thinking introspection.
+  (files: frontend/components/chat-panel.tsx)
+- **ConsoleEntryRecord** type must now be present in the consumer's
+  `@/lib/types` module (see INTEGRATION.md).
+  (files: frontend/components/chat-runtime.tsx, frontend/components/console-panel.tsx)
+
+### Migration notes
+- Add `ConsoleEntryRecord` interface to your `@/lib/types` file (see
+  INTEGRATION.md section 3.2 for the exact shape).
+- Copy `console-panel.tsx` to your components directory.
+- Ensure your `ChatMessage` type includes `console_entries` field and
+  your API returns it from message history endpoints.
+- Add `@/components/ui/badge` shadcn component if not already installed.
+
+## [1.8.2] - 2026-04-02
+### Fixed
+- **ParallelToolNode**: pass `input_type` to `_arun_one()` and use
+  `_combine_tool_outputs()` for result formatting, fixing a `TypeError`
+  with langgraph >=0.6.11 where `_arun_one` gained a required
+  `input_type` parameter.
+  (files: backend/agents/tools/parallel_node.py)
+- **Embedding dimension mismatch**: `build_embeddings_from_provider` now
+  accepts an optional `dims` keyword and forwards it as the `dimensions`
+  parameter to litellm, preventing `DataException: expected N dimensions,
+  not M` when the store table was created with fewer dimensions than the
+  model's native output (e.g. store has 1536 but text-embedding-3-large
+  produces 3072).
+  (files: backend/agents/llm/manager.py)
+### Migration notes
+- Consumers should detect existing `store_vectors` table dimensions at
+  startup and pass `dims=<existing>` to `build_embeddings_from_provider`
+  to avoid dimension mismatches. See updated INTEGRATION.md section 2.4.
+
 ## [1.8.1] - 2026-04-02
 ### Added
 - **TaskItem** schema: canonical model for structured task decomposition

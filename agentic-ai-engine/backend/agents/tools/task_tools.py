@@ -76,15 +76,19 @@ def _build_task_tools(*, session_id: uuid.UUID) -> list:
             task_id = f"t{next_num}"
 
             if blocked_by:
-                existing = (await db.scalars(
+                existing = set((await db.scalars(
                     select(TaskItem.id).where(
                         TaskItem.session_id == session_id,
                         TaskItem.id.in_(blocked_by),
                     )
-                )).all()
-                missing = set(blocked_by) - set(existing)
+                )).all())
+                missing = set(blocked_by) - existing
                 if missing:
-                    return f"Error: blocked_by references non-existent tasks: {', '.join(sorted(missing))}"
+                    logger.debug(
+                        "create_task: blocked_by refs %s not yet in DB "
+                        "(likely forward-references in a parallel batch)",
+                        missing,
+                    )
 
             task = TaskItem(
                 id=task_id,

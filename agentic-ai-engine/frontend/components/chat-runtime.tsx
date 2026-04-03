@@ -15,13 +15,14 @@ import {
   AssistantRuntimeProvider,
   unstable_useRemoteThreadListRuntime,
   useAuiState,
+  useThreadListItem,
   type ChatModelAdapter,
   type unstable_RemoteThreadListAdapter,
 } from "@assistant-ui/react";
 import { ExportedMessageRepository } from "@assistant-ui/react";
 import type { ThreadHistoryAdapter } from "@assistant-ui/core";
 import { api } from "@/lib/api-client";
-import type { AgentActivityRecord } from "@/lib/types";
+import type { AgentActivityRecord, ConsoleEntryRecord } from "@/lib/types";
 
 /* ------------------------------------------------------------------ */
 /*  Child-agent activity context (consumed by AgentActivityPanel)      */
@@ -39,22 +40,37 @@ export interface ActivityGroup {
   agents: { runId: string; slug: string; content: string; done: boolean }[];
 }
 
-interface ChildAgentContextValue {
-  /** Live agents streaming now (keyed by run_id). */
-  liveAgents: Map<string, ChildAgent>;
-  /** Historical activities loaded from the API on thread switch. */
-  historicalActivities: ActivityGroup[];
-  /** Whether the activity panel should be visible. */
-  activityVisible: boolean;
-  /** Show or hide the panel. */
-  setActivityVisible: (v: boolean) => void;
-  /** Clear live state (e.g. after streaming finishes or user dismisses). */
-  clearLive: () => void;
-  /** Reset all activity state (live + historical + visibility). */
-  resetActivity: () => void;
-  /** The user message text that triggered the current live run. */
-  livePrompt: string;
+export interface LiveConsoleEntry {
+  entryType: "tool_call" | "thinking";
+  toolName?: string;
+  toolArgs?: Record<string, unknown>;
+  toolResult?: string;
+  thinkingContent?: string;
+  startedAt: string;
+  finishedAt?: string;
+  done: boolean;
 }
+
+export interface ConsoleGroup {
+  triggerMessageId: string;
+  triggerContent: string;
+  entries: ConsoleEntryRecord[];
+}
+
+interface ChildAgentContextValue {
+  liveAgents: Map<string, ChildAgent>;
+  historicalActivities: ActivityGroup[];
+  activityVisible: boolean;
+  setActivityVisible: (v: boolean) => void;
+  clearLive: () => void;
+  resetActivity: () => void;
+  livePrompt: string;
+  sessionIdRef: React.MutableRefObject<string | undefined>;
+  liveConsoleEntries: Map<string, LiveConsoleEntry>;
+  historicalConsole: ConsoleGroup[];
+}
+
+const _emptySessionRef: React.MutableRefObject<string | undefined> = { current: undefined };
 
 const ChildAgentContext = createContext<ChildAgentContextValue>({
   liveAgents: new Map(),
@@ -64,6 +80,9 @@ const ChildAgentContext = createContext<ChildAgentContextValue>({
   clearLive: () => {},
   resetActivity: () => {},
   livePrompt: "",
+  sessionIdRef: _emptySessionRef,
+  liveConsoleEntries: new Map(),
+  historicalConsole: [],
 });
 
 export function useChildAgentActivity() {
@@ -92,7 +111,7 @@ export function useTaskBoard() {
 
 export type AgentEventCallback = (
   event: string,
-  data: Record<string, string>,
+  data: Record<string, any>,
 ) => void;
 
 /* ------------------------------------------------------------------ */
@@ -167,6 +186,7 @@ function makeChatModelAdapter(
                 sessionIdRef.current = data.session_id;
               } else if (currentEvent === "thinking" && data.content !== undefined) {
                 thinkingAccumulated += data.content;
+                onAgentEvent.current?.(currentEvent, data);
                 const display = thinkingAccumulated
                   ? `<think>\n${thinkingAccumulated}\n</think>\n\n${accumulated}`
                   : accumulated;
@@ -181,6 +201,8 @@ function makeChatModelAdapter(
                 currentEvent === "agent_start" ||
                 currentEvent === "agent_token" ||
                 currentEvent === "agent_done" ||
+                currentEvent === "tool_call_start" ||
+                currentEvent === "tool_call_end" ||
                 currentEvent === "presentation_update" ||
                 currentEvent === "task_update"
               ) {
@@ -237,6 +259,30 @@ function buildActivityGroups(
 }
 
 /* ------------------------------------------------------------------ */
+/*  Build historical console groups from loaded messages               */
+/* ------------------------------------------------------------------ */
+
+function buildConsoleGroups(
+  messages: { id: string; role: string; content: string; console_entries?: ConsoleEntryRecord[] }[],
+): ConsoleGroup[] {
+  const groups: ConsoleGroup[] = [];
+  let lastUserMsg: { id: string; content: string } | undefined;
+
+  for (const msg of messages) {
+    if (msg.role === "user") {
+      lastUserMsg = { id: msg.id, content: msg.content };
+    } else if (msg.role === "assistant" && msg.console_entries?.length) {
+      groups.push({
+        triggerMessageId: lastUserMsg?.id ?? msg.id,
+        triggerContent: lastUserMsg?.content ?? "",
+        entries: msg.console_entries,
+      });
+    }
+  }
+  return groups;
+}
+
+/* ------------------------------------------------------------------ */
 /*  History adapter                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -248,38 +294,50 @@ function stripContextPrefix(text: string): string {
 
 function useHistoryAdapter(
   remoteId: string | undefined,
+  sessionIdRef: React.MutableRefObject<string | undefined>,
   onActivitiesLoaded: React.RefObject<((groups: ActivityGroup[]) => void) | undefined>,
+  onConsoleLoaded: React.RefObject<((groups: ConsoleGroup[]) => void) | undefined>,
 ): ThreadHistoryAdapter {
   return useMemo(
     () => ({
       async load() {
         if (!remoteId) {
           onActivitiesLoaded.current?.([]);
+          onConsoleLoaded.current?.([]);
           return ExportedMessageRepository.fromArray([]);
         }
         const msgs = await api.getChatSessionMessages(remoteId);
 
+        const toExported = () =>
+          ExportedMessageRepository.fromArray(
+            msgs.map((m) => ({
+              role: m.role as "user" | "assistant",
+              content: [{
+                type: "text" as const,
+                text: m.role === "user" ? stripContextPrefix(m.content) : m.content,
+              }],
+            })),
+          );
+
+        if (sessionIdRef.current !== remoteId) return toExported();
+
         const groups = buildActivityGroups(msgs as any);
         onActivitiesLoaded.current?.(groups);
 
-        return ExportedMessageRepository.fromArray(
-          msgs.map((m) => ({
-            role: m.role as "user" | "assistant",
-            content: [{
-              type: "text" as const,
-              text: m.role === "user" ? stripContextPrefix(m.content) : m.content,
-            }],
-          })),
-        );
+        const consoleGroups = buildConsoleGroups(msgs as any);
+        onConsoleLoaded.current?.(consoleGroups);
+
+        return toExported();
       },
       async append() {},
     }),
-    [remoteId, onActivitiesLoaded],
+    [remoteId, sessionIdRef, onActivitiesLoaded, onConsoleLoaded],
   );
 }
 
 function useThreadListAdapter(
   sessionIdRef: React.MutableRefObject<string | undefined>,
+  onThreadSwitchRef: React.RefObject<(() => void) | undefined>,
   fixedSessionId?: string,
 ): unstable_RemoteThreadListAdapter {
   return useMemo(
@@ -310,6 +368,7 @@ function useThreadListAdapter(
         }
         const session = await api.createChatSession();
         sessionIdRef.current = session.id;
+        onThreadSwitchRef.current?.();
         return { remoteId: session.id, externalId: undefined };
       },
       async rename(remoteId: string, newTitle: string) {
@@ -358,7 +417,7 @@ function useThreadListAdapter(
         };
       },
     }),
-    [sessionIdRef, fixedSessionId],
+    [sessionIdRef, onThreadSwitchRef, fixedSessionId],
   );
 }
 
@@ -367,6 +426,7 @@ function RuntimeHook({
   sessionIdRef,
   onAgentEventRef,
   onActivitiesLoadedRef,
+  onConsoleLoadedRef,
   onRunStartRef,
   onThreadSwitchRef,
   messageTransformRef,
@@ -376,6 +436,7 @@ function RuntimeHook({
   sessionIdRef: React.MutableRefObject<string | undefined>;
   onAgentEventRef: React.RefObject<AgentEventCallback | undefined>;
   onActivitiesLoadedRef: React.RefObject<((groups: ActivityGroup[]) => void) | undefined>;
+  onConsoleLoadedRef: React.RefObject<((groups: ConsoleGroup[]) => void) | undefined>;
   onRunStartRef: React.RefObject<((userText: string) => void) | undefined>;
   onThreadSwitchRef: React.RefObject<(() => void) | undefined>;
   messageTransformRef: React.RefObject<((text: string) => string) | undefined>;
@@ -392,12 +453,30 @@ function RuntimeHook({
     onThreadSwitchRef.current?.();
   }, [effectiveRemoteId, onThreadSwitchRef]);
 
-  const history = useHistoryAdapter(effectiveRemoteId, onActivitiesLoadedRef);
+  const history = useHistoryAdapter(effectiveRemoteId, sessionIdRef, onActivitiesLoadedRef, onConsoleLoadedRef);
   const adapter = useMemo(
     () => makeChatModelAdapter(agentSlugRef, sessionIdRef, onAgentEventRef, onRunStartRef, messageTransformRef),
     [agentSlugRef, sessionIdRef, onAgentEventRef, onRunStartRef, messageTransformRef],
   );
   return useLocalRuntime(adapter, { adapters: { history } });
+}
+
+function ThreadSwitchDetector({ onSwitchRef }: { onSwitchRef: React.RefObject<(() => void) | undefined> }) {
+  const remoteId = useThreadListItem((s) => s.remoteId);
+  const prevRef = useRef<string | undefined | null>(null);
+
+  useEffect(() => {
+    if (prevRef.current === null) {
+      prevRef.current = remoteId;
+      return;
+    }
+    if (prevRef.current !== remoteId) {
+      prevRef.current = remoteId;
+      onSwitchRef.current?.();
+    }
+  }, [remoteId, onSwitchRef]);
+
+  return null;
 }
 
 interface ChatRuntimeProps extends PropsWithChildren {
@@ -419,25 +498,53 @@ export function ChatRuntime({ children, agentSlug, onPresentationUpdate, message
   const [activityVisible, setActivityVisible] = useState(false);
   const [livePrompt, setLivePrompt] = useState("");
   const activeCountRef = useRef(0);
+
+  const [liveConsoleEntries, setLiveConsoleEntries] = useState<Map<string, LiveConsoleEntry>>(new Map());
+  const [historicalConsole, setHistoricalConsole] = useState<ConsoleGroup[]>([]);
+  const thinkingKeyRef = useRef(0);
   const [taskUpdateCounter, setTaskUpdateCounter] = useState(0);
   const [currentSessionId, setCurrentSessionId] = useState<string | undefined>(undefined);
+  const panelSessionRef = useRef<string | undefined>(undefined);
 
   const clearLive = useCallback(() => {
     setLiveAgentMap(new Map());
+    setLiveConsoleEntries(new Map());
     setLivePrompt("");
     activeCountRef.current = 0;
+    thinkingKeyRef.current = 0;
   }, []);
 
   const resetActivity = useCallback(() => {
     setLiveAgentMap(new Map());
+    setLiveConsoleEntries(new Map());
     setLivePrompt("");
     activeCountRef.current = 0;
+    thinkingKeyRef.current = 0;
     setHistoricalActivities([]);
+    setHistoricalConsole([]);
     setActivityVisible(false);
   }, []);
 
+  const ensureSessionClean = useCallback(() => {
+    const active = sessionIdRef.current;
+    if (active !== panelSessionRef.current) {
+      panelSessionRef.current = active;
+      setLiveAgentMap(new Map());
+      setLiveConsoleEntries(new Map());
+      setLivePrompt("");
+      activeCountRef.current = 0;
+      thinkingKeyRef.current = 0;
+      setHistoricalActivities([]);
+      setHistoricalConsole([]);
+      setActivityVisible(false);
+      setCurrentSessionId(active);
+      setTaskUpdateCounter(0);
+    }
+  }, []);
+
   const onAgentEventRef = useRef<AgentEventCallback | undefined>(undefined);
-  onAgentEventRef.current = (event: string, data: Record<string, string>) => {
+  onAgentEventRef.current = (event: string, data: Record<string, any>) => {
+    ensureSessionClean();
     if (event === "agent_start") {
       activeCountRef.current += 1;
       setActivityVisible(true);
@@ -465,6 +572,65 @@ export function ChatRuntime({ children, agentSlug, onPresentationUpdate, message
         }
         return next;
       });
+    } else if (event === "tool_call_start") {
+      setActivityVisible(true);
+      setLiveConsoleEntries((prev) => {
+        const next = new Map(prev);
+        next.set(data.run_id, {
+          entryType: "tool_call",
+          toolName: data.tool_name,
+          toolArgs: data.args,
+          startedAt: new Date().toISOString(),
+          done: false,
+        });
+        return next;
+      });
+    } else if (event === "tool_call_end") {
+      setLiveConsoleEntries((prev) => {
+        const next = new Map(prev);
+        const entry = next.get(data.run_id);
+        if (entry) {
+          next.set(data.run_id, {
+            ...entry,
+            toolResult: data.result,
+            finishedAt: new Date().toISOString(),
+            done: true,
+          });
+        } else {
+          next.set(data.run_id, {
+            entryType: "tool_call",
+            toolName: data.tool_name,
+            toolResult: data.result,
+            startedAt: new Date().toISOString(),
+            finishedAt: new Date().toISOString(),
+            done: true,
+          });
+        }
+        return next;
+      });
+    } else if (event === "thinking") {
+      setActivityVisible(true);
+      setLiveConsoleEntries((prev) => {
+        const next = new Map(prev);
+        const key = `thinking_${thinkingKeyRef.current}`;
+        const existing = next.get(key);
+        if (existing && existing.entryType === "thinking") {
+          next.set(key, {
+            ...existing,
+            thinkingContent: (existing.thinkingContent ?? "") + data.content,
+          });
+        } else {
+          if (existing) thinkingKeyRef.current += 1;
+          const newKey = `thinking_${thinkingKeyRef.current}`;
+          next.set(newKey, {
+            entryType: "thinking",
+            thinkingContent: data.content,
+            startedAt: new Date().toISOString(),
+            done: false,
+          });
+        }
+        return next;
+      });
     } else if (event === "presentation_update" && data.presentation_id) {
       onPresentationUpdate?.(data.presentation_id);
     } else if (event === "task_update") {
@@ -479,16 +645,25 @@ export function ChatRuntime({ children, agentSlug, onPresentationUpdate, message
     if (groups.length > 0) setActivityVisible(true);
   };
 
+  const onConsoleLoadedRef = useRef<((groups: ConsoleGroup[]) => void) | undefined>(undefined);
+  onConsoleLoadedRef.current = (groups: ConsoleGroup[]) => {
+    setHistoricalConsole(groups);
+    if (groups.length > 0) setActivityVisible(true);
+  };
+
   const onRunStartRef = useRef<((userText: string) => void) | undefined>(undefined);
   onRunStartRef.current = (userText: string) => {
+    ensureSessionClean();
     clearLive();
     setLivePrompt(stripContextPrefix(userText));
   };
 
   const onThreadSwitchRef = useRef<(() => void) | undefined>(undefined);
   onThreadSwitchRef.current = () => {
+    panelSessionRef.current = sessionIdRef.current;
     clearLive();
     setHistoricalActivities([]);
+    setHistoricalConsole([]);
     setActivityVisible(false);
     setCurrentSessionId(sessionIdRef.current);
     setTaskUpdateCounter(0);
@@ -506,14 +681,21 @@ export function ChatRuntime({ children, agentSlug, onPresentationUpdate, message
       clearLive,
       resetActivity,
       livePrompt,
+      sessionIdRef,
+      liveConsoleEntries,
+      historicalConsole,
     }),
-    [liveAgentMap, historicalActivities, activityVisible, clearLive, resetActivity, livePrompt],
+    [liveAgentMap, historicalActivities, activityVisible, clearLive, resetActivity, livePrompt, liveConsoleEntries, historicalConsole],
   );
 
-  const threadListAdapter = useThreadListAdapter(sessionIdRef, fixedSessionId);
+  const threadListAdapter = useThreadListAdapter(sessionIdRef, onThreadSwitchRef, fixedSessionId);
   const runtime = unstable_useRemoteThreadListRuntime({
-    runtimeHook: () => RuntimeHook({ agentSlugRef, sessionIdRef, onAgentEventRef, onActivitiesLoadedRef, onRunStartRef, onThreadSwitchRef, messageTransformRef, fixedSessionId }),
+    runtimeHook: () => RuntimeHook({ agentSlugRef, sessionIdRef, onAgentEventRef, onActivitiesLoadedRef, onConsoleLoadedRef, onRunStartRef, onThreadSwitchRef, messageTransformRef, fixedSessionId }),
     adapter: threadListAdapter,
+  });
+
+  useEffect(() => {
+    ensureSessionClean();
   });
 
   const taskBoardValue = useMemo<TaskBoardContextValue>(
@@ -525,6 +707,7 @@ export function ChatRuntime({ children, agentSlug, onPresentationUpdate, message
     <ChildAgentContext.Provider value={ctxValue}>
       <TaskBoardContext.Provider value={taskBoardValue}>
         <AssistantRuntimeProvider runtime={runtime}>
+          <ThreadSwitchDetector onSwitchRef={onThreadSwitchRef} />
           {children}
         </AssistantRuntimeProvider>
       </TaskBoardContext.Provider>

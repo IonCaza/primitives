@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { Bot, ChevronDown, ClipboardList, GripVertical, PanelRightOpen, Users } from "lucide-react";
+import { Bot, ChevronDown, ClipboardList, GripVertical, PanelRightOpen, Terminal, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Thread } from "@/components/assistant-ui/thread";
@@ -9,6 +9,7 @@ import { ThreadList } from "@/components/assistant-ui/thread-list";
 import { ChatRuntime, useChildAgentActivity, useTaskBoard } from "@/components/chat-runtime";
 import { AgentActivityPanel } from "@/components/agent-activity-panel";
 import { TaskBoardPanel } from "@/components/task-board-panel";
+import { ConsolePanel } from "@/components/console-panel";
 import { useAgents } from "@/hooks/use-settings";
 import { useComposerRuntime } from "@assistant-ui/react";
 import { useChatTrigger } from "@/hooks/use-chat-trigger";
@@ -26,7 +27,7 @@ const MIN_ACTIVITY_PCT = 20;
 const MAX_ACTIVITY_PCT = 70;
 const DEFAULT_ACTIVITY_PCT = 50;
 
-type PanelTab = "activity" | "tasks";
+type PanelTab = "activity" | "tasks" | "console";
 
 function ChatPanelInner() {
   const { activityVisible, setActivityVisible } = useChildAgentActivity();
@@ -139,12 +140,23 @@ function ChatPanelInner() {
                 <ClipboardList className="h-3 w-3" />
                 Tasks
               </Button>
+              <Button
+                variant={panelTab === "console" ? "secondary" : "ghost"}
+                size="sm"
+                className="h-6 gap-1 px-2 text-[11px]"
+                onClick={() => setPanelTab("console")}
+              >
+                <Terminal className="h-3 w-3" />
+                Console
+              </Button>
             </div>
             <div className="min-h-0 flex-1">
               {panelTab === "activity" ? (
                 <AgentActivityPanel onCollapse={toggleActivity} />
-              ) : (
+              ) : panelTab === "tasks" ? (
                 <TaskBoardPanel onCollapse={toggleActivity} />
+              ) : (
+                <ConsolePanel onCollapse={toggleActivity} />
               )}
             </div>
           </div>

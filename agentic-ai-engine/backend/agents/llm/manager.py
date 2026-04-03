@@ -62,8 +62,16 @@ def build_llm_from_provider(provider: LlmProvider, *, streaming: bool = True) ->
 
 def build_embeddings_from_provider(
     provider: LlmProvider,
+    *,
+    dims: int | None = None,
 ) -> Callable[[list[str]], list[list[float]]]:
-    """Return an async embedding callable suitable for PostgresStore index config."""
+    """Return an async embedding callable suitable for PostgresStore index config.
+
+    When *dims* is provided it is forwarded as the ``dimensions`` parameter to
+    the embedding API, which truncates the output to match.  This is critical
+    when the store table was created with fewer dimensions than the model's
+    native output (e.g. store has 1536 but text-embedding-3-large produces 3072).
+    """
     api_key: str | None = None
     if provider.api_key_encrypted:
         api_key = decrypt_key(provider.api_key_encrypted)
@@ -74,6 +82,8 @@ def build_embeddings_from_provider(
             kwargs["api_key"] = api_key
         if provider.base_url:
             kwargs["api_base"] = provider.base_url
+        if dims is not None:
+            kwargs["dimensions"] = dims
         response = await litellm.aembedding(**kwargs)
         return [item["embedding"] for item in response.data]
 

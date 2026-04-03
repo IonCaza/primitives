@@ -200,6 +200,7 @@ app.include_router(chat_router, prefix="/api/v1")
 Add to your application's lifespan or startup event:
 
 ```python
+from sqlalchemy import text
 from app.agents.memory.pool import init_memory_pool, close_memory_pool
 from app.agents.llm.manager import build_embeddings_from_provider, get_embedding_dims
 
@@ -220,8 +221,25 @@ async def lifespan(app):
     #         )
     #     )).scalar_one_or_none()
     #     if provider:
-    #         embed_fn = build_embeddings_from_provider(provider)
-    #         embed_dims = get_embedding_dims(provider)
+    #         model_dims = get_embedding_dims(provider)
+    #
+    #         # Detect existing store_vectors table dimensions to avoid
+    #         # mismatch when a model produces more dims than the table has.
+    #         existing_dims = None
+    #         try:
+    #             row = await db.execute(text(
+    #                 "SELECT atttypmod FROM pg_attribute "
+    #                 "WHERE attrelid = 'store_vectors'::regclass "
+    #                 "AND attname = 'embedding'"
+    #             ))
+    #             val = row.scalar_one_or_none()
+    #             if val and isinstance(val, int) and val > 0:
+    #                 existing_dims = val
+    #         except Exception:
+    #             pass  # Table doesn't exist yet
+    #
+    #         embed_dims = existing_dims if existing_dims else model_dims
+    #         embed_fn = build_embeddings_from_provider(provider, dims=embed_dims)
 
     await init_memory_pool(embed_fn=embed_fn, embed_dims=embed_dims)
 
@@ -229,6 +247,13 @@ async def lifespan(app):
 
     await close_memory_pool()
 ```
+
+> **Adaptation note**: The `dims` parameter on `build_embeddings_from_provider`
+> tells the embedding API to truncate its output to that many dimensions.
+> This is critical when the `store_vectors` table was created with one
+> dimension (e.g. 1536 for text-embedding-3-small) and you later switch to
+> a model with a larger native output (e.g. 3072 for text-embedding-3-large).
+> Always detect the existing table dimension and pass it through.
 
 ### 2.5 Seed Builtin Agents (Extension Point)
 
@@ -286,13 +311,38 @@ pnpm add @assistant-ui/react @assistant-ui/core assistant-stream \
 
 Copy `frontend/components/` into your `src/components/` directory:
 - `chat-runtime.tsx` -- The SSE adapter (rename export for your app if desired)
-- `chat-panel.tsx` -- The full chat panel with thread list and activity
+- `chat-panel.tsx` -- The full chat panel with thread list, activity, tasks, and console
 - `agent-activity-panel.tsx` -- The delegation tracking side panel
+- `task-board-panel.tsx` -- Live task decomposition board
+- `console-panel.tsx` -- Tool call and thinking visualization panel
 - `assistant-ui/` -- The assistant-ui component overrides (thread, markdown, etc.)
 
 **Adaptation notes:**
 - `@/lib/api-client` import -- update to your API client's path
-- `@/lib/types` import -- update to your types module
+- `@/lib/types` import -- update to your types module. Must include:
+  ```typescript
+  export interface ConsoleEntryRecord {
+    id: string;
+    entry_type: "tool_call" | "thinking";
+    sequence: number;
+    tool_name: string | null;
+    tool_args: Record<string, unknown> | null;
+    tool_result: string | null;
+    thinking_content: string | null;
+    started_at: string;
+    finished_at: string | null;
+  }
+
+  export interface ChatMessage {
+    id: string;
+    role: "user" | "assistant" | "tool";
+    content: string;
+    created_at: string;
+    agent_activities: AgentActivityRecord[];
+    console_entries: ConsoleEntryRecord[];  // Required for console panel
+  }
+  ```
+- `@/components/ui/badge` -- install via `npx shadcn@latest add badge` if not present
 - `@/hooks/use-settings` import -- create a hook that fetches agent list:
   ```typescript
   export function useAgents() {
@@ -338,6 +388,9 @@ listAgents(): Promise<AgentConfig[]>
 
 // Task board
 getSessionTasks(sessionId: string): Promise<TaskItem[]>
+
+// Feedback (optional)
+createFeedback(payload: FeedbackPayload): Promise<void>
 ```
 
 The chat send itself is handled by the ChatRuntime's SSE adapter (direct

@@ -803,9 +803,115 @@ on demand.
   `BUILTIN_SKILLS` in `skills.py` with
   `applicable_agents=["presentation-designer"]`.
 
-## 13. Verification
+## 13. RBAC and Entitlement System (Track 11)
 
-- [ ] Database migrations run successfully (including `agent_memories`, `agent_skills`, `session_notes`, `last_memory_consolidation` columns)
+The engine includes a pluggable RBAC framework with three entitlement
+layers, a policy configuration model, explicit resource sharing, and
+query-scoping helpers.
+
+### 13.1 Database Tables
+
+Add two new tables from `schema/access_policy.py`:
+
+- **`access_policies`** — hierarchical policy rows (one per scope).
+- **`resource_grants`** — explicit per-resource sharing between users.
+
+Run Alembic autogenerate or create a migration manually.
+
+### 13.2 Implement an EntitlementResolver
+
+Create a module (e.g. `app/rbac/resolver.py`) that implements the
+`EntitlementResolver` protocol:
+
+```python
+from app.agents.context.entitlements import (
+    DataScope, EntitlementContext, ResourceGrant, AgentToolPolicy,
+)
+from app.agents.context.resolver import EntitlementResolver
+
+class MyAppResolver:
+    async def resolve(self, db, user_id):
+        # 1. Load user and their org/team memberships
+        # 2. Walk AccessPolicy hierarchy (platform → org → team → user)
+        # 3. Load ResourceGrant rows for this user
+        # 4. Load self-identity links (UserContributorLink, etc.)
+        # 5. Return a populated EntitlementContext
+        ...
+```
+
+Register it at app startup (e.g. in your FastAPI lifespan):
+
+```python
+from app.agents.context.resolver import register_entitlement_resolver
+register_entitlement_resolver(MyAppResolver())
+```
+
+Without registration the `DefaultResolver` grants full access (backward
+compatible).
+
+### 13.3 Scope ORM-Based Tools
+
+Use `scoped_query()` in your domain tool modules:
+
+```python
+from app.agents.tools.scoping import scoped_query
+
+stmt = select(Commit).join(Repository)
+stmt = scoped_query(
+    stmt,
+    project_col=Repository.project_id,
+    contributor_col=Commit.contributor_id,
+)
+```
+
+### 13.4 Scope Text-to-SQL with Postgres RLS
+
+For the text-to-SQL agent, inject RLS session variables before execution:
+
+```python
+from app.agents.context.entitlements import current_entitlements
+from sqlalchemy import text
+
+ctx = current_entitlements.get()
+if ctx:
+    for key, value in ctx.rls_vars.items():
+        await db.execute(text(f"SET LOCAL {key} = :val"), {"val": value})
+```
+
+Then create RLS policies on tenant-scoped tables that reference these
+variables (e.g. `current_setting('app.current_org_ids', true)`).
+
+> **Important:** The app's Postgres user must NOT be a superuser.  Use
+> `FORCE ROW LEVEL SECURITY` to apply RLS even to table owners.
+
+### 13.5 Agent/Tool Access Control
+
+The runner checks `EntitlementContext.can_invoke_agent(slug)` before
+building the agent.  `build_agent` and `build_coordinator` filter tool
+assignments against `allowed_tools_for_agent(slug)`.
+
+Configure policies by inserting `AccessPolicy` rows with
+`agent_tool_rules` JSON, e.g.:
+
+```json
+{"text-to-sql": ["list_tables", "describe_table"], "supervisor": null}
+```
+
+`null` = all assigned tools.  Missing slug = agent not accessible.
+
+### 13.6 Adaptation Notes
+
+- **contributr:** Implement resolver using `ProjectMembership` and
+  `UserContributorLink` tables.  `contributor_ids` enables Layer C
+  (self-identity for VCS data).
+- **uad36:** Implement resolver using `UserRole` / `Organization`.
+  `organization_ids` drives org-scoped RLS on appraisals.
+- **Single-tenant deploys:** Skip resolver registration; the default
+  grants full access.
+
+## 14. Verification
+
+- [ ] Database migrations run successfully (including `agent_memories`, `agent_skills`, `session_notes`, `last_memory_consolidation`, `access_policies`, `resource_grants`)
 - [ ] Application starts without errors (memory pool initializes, skills seeded)
 - [ ] POST `/api/v1/chat` returns SSE events (requires at least one LLM provider and enabled agent in the DB)
 - [ ] Frontend chat panel renders and connects to the SSE stream
@@ -825,3 +931,7 @@ on demand.
 - [ ] Skill tools: `list_skills` returns available skills; `use_skill("data-exploration-workflow")` returns the prompt
 - [ ] Consolidation: after 5+ sessions, `maybe_consolidate` runs and logs "Memory consolidation for user X: N actions"
 - [ ] Presentation designer: 4-phase workflow reflected in agent behavior (explore before building)
+- [ ] RBAC: without a registered resolver, agents behave as before (full access)
+- [ ] RBAC: with an `AccessPolicy` row restricting an agent, users without access receive an error event
+- [ ] RBAC: `scoped_query()` applies project/org/creator filters when EntitlementContext is set
+- [ ] RBAC: `EntitlementContext.rls_vars` returns correctly formatted session variable dict

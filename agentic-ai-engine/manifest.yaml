@@ -1,5 +1,5 @@
 name: agentic-ai-engine
-version: "1.9.5"
+version: "1.10.0"
 description: >
   Full-stack multi-agent AI engine with LangGraph supervisor pattern,
   DB-driven agent configuration, 3-tier memory (checkpoint + summarization +
@@ -30,6 +30,8 @@ provides:
     - TaskItem
     - AgentMemory
     - AgentSkill
+    - AccessPolicy
+    - ResourceGrant
   api_routes:
     - { path: "/api/v1/chat", methods: [POST, GET, PATCH, DELETE], description: "SSE streaming chat + session CRUD" }
     - { path: "/api/v1/agents", methods: [GET, POST, PUT, DELETE], description: "Agent configuration CRUD" }
@@ -75,6 +77,12 @@ extension_points:
       The registry module imports tool category modules to trigger
       self-registration. Add imports for your domain-specific tool
       modules here.
+  - name: "Entitlement resolver"
+    location: "backend/agents/context/resolver.py"
+    description: >
+      Implement the EntitlementResolver protocol and register it at
+      app startup to map your user/org/team model into entitlement
+      context that drives data scoping and agent/tool access control.
 
 extracted_from:
   - repo: contributr

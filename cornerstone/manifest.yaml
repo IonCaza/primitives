@@ -1,5 +1,5 @@
 name: cornerstone
-version: "1.0.0"
+version: "1.0.1"
 description: >
   Foundational application scaffold providing monorepo structure,
   Docker Compose orchestration, FastAPI + async SQLAlchemy + Alembic backend,

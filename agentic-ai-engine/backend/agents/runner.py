@@ -10,7 +10,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.base import build_agent
-from app.agents.context import current_session_id, current_user_id
+from app.agents.context import current_session_id, current_user_id, current_entitlements
+from app.agents.context.resolver import get_entitlement_resolver
 from app.agents.coordinator import build_coordinator
 from app.agents.llm.manager import build_llm_from_provider
 from app.agents.memory.cleanup import cleanup_checkpoint
@@ -102,6 +103,20 @@ async def run_agent_stream(
 
     current_user_id.set(user_id)
     current_session_id.set(session_id)
+
+    # Resolve RBAC entitlements for the calling user
+    entitlements = None
+    if user_id is not None:
+        try:
+            resolver = get_entitlement_resolver()
+            entitlements = await resolver.resolve(db, user_id)
+            current_entitlements.set(entitlements)
+        except Exception:
+            logger.debug("Entitlement resolution failed (non-critical, defaulting to open)", exc_info=True)
+
+    if entitlements and not entitlements.can_invoke_agent(agent_slug):
+        yield {"type": "error", "content": f"You do not have access to the {agent_config.name} agent."}
+        return
 
     recalled_context = ""
     if user_id and mem_settings.memory_enabled:

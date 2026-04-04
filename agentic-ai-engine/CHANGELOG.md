@@ -2,6 +2,56 @@
 
 All notable changes to the agentic-ai-engine primitive will be documented here.
 
+## [1.10.0] - 2026-04-04
+### Added
+- **RBAC entitlement framework**: three-layer access model (policy
+  hierarchy + explicit resource grants + self-identity) enabling
+  configurable, hierarchical data scoping across platform / organization /
+  team / user levels.
+  (files: backend/agents/context/entitlements.py, backend/agents/context/resolver.py)
+- **EntitlementContext** frozen dataclass carrying fully-resolved user
+  entitlements: data_scope, organization/team/project/contributor IDs,
+  resource grants, agent-tool policies, and RLS session variables.
+  (files: backend/agents/context/entitlements.py)
+- **EntitlementResolver** protocol with pluggable consumer implementations
+  and a backward-compatible DefaultResolver (all-access).
+  (files: backend/agents/context/resolver.py)
+- **AccessPolicy** database model for hierarchical policy configuration
+  with scope_type (platform/org/team/user), data_scope, per-agent tool
+  rules, and SQL table allow-lists.
+  (files: schema/access_policy.py)
+- **ResourceGrant** database model for explicit per-resource sharing
+  between users with permission levels and optional expiry.
+  (files: schema/access_policy.py)
+- **scoped_query()** helper for applying entitlement filters to SQLAlchemy
+  select statements, supporting project, org, creator, and contributor
+  column scoping across all three entitlement layers.
+  (files: backend/agents/tools/scoping.py)
+- **current_entitlements** ContextVar re-exported from the context package
+  for tool-level access to the resolved entitlement context.
+  (files: backend/agents/context/__init__.py)
+
+### Changed
+- **Runner** resolves entitlements via the registered EntitlementResolver
+  before agent construction and checks agent access before proceeding.
+  (files: backend/agents/runner.py)
+- **build_agent** and **build_coordinator** filter tool assignments against
+  the user's agent-tool policy when an EntitlementContext is available.
+  (files: backend/agents/base.py, backend/agents/coordinator.py)
+
+### Migration notes
+- New tables `access_policies` and `resource_grants` require Alembic
+  migration.  See `schema/access_policy.py` for canonical definitions.
+- To enable RBAC, implement `EntitlementResolver` and call
+  `register_entitlement_resolver()` at app startup.  Without registration
+  the DefaultResolver grants full access (backward compatible).
+- Add `from app.agents.context.entitlements import ...` to tool modules
+  that need data scoping.  Use `scoped_query()` from
+  `app.agents.tools.scoping` for ORM-based tools.
+- For text-to-SQL safety, inject `EntitlementContext.rls_vars` as
+  `SET LOCAL` session variables before SQL execution and enable Postgres
+  RLS on tenant-scoped tables (consumer-specific migration).
+
 ## [1.9.5] - 2026-04-02
 ### Fixed
 - Thread-switch pane clearing now hooks into assistant-ui correctly.

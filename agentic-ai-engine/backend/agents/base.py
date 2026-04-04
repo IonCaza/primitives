@@ -4,6 +4,7 @@ from langchain_core.tools import BaseTool
 from langgraph.prebuilt import create_react_agent
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.context.entitlements import current_entitlements
 from app.agents.llm.manager import build_llm_from_provider
 from app.agents.memory.modifier import make_state_modifier
 from app.agents.memory.pool import get_checkpointer, get_store
@@ -45,6 +46,14 @@ def build_agent(
 
     tool_slugs = {a.tool_slug for a in agent_config.tool_assignments}
     is_supervisor = getattr(agent_config, "agent_type", "standard") == "supervisor"
+
+    # Apply entitlement-based tool filtering when a policy exists
+    ctx = current_entitlements.get()
+    if ctx is not None:
+        allowed = ctx.allowed_tools_for_agent(agent_config.slug)
+        if allowed is not None and tool_slugs:
+            tool_slugs = tool_slugs & allowed
+
     if tool_slugs:
         tools = build_tools_for_slugs(db, tool_slugs)
     elif is_supervisor:

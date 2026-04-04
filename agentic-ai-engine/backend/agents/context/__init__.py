@@ -8,6 +8,9 @@ Usage in tools::
 
     from app.agents.context import current_user_id, current_session_id
     uid = current_user_id.get()  # uuid.UUID | None
+
+    from app.agents.context import current_entitlements
+    ctx = current_entitlements.get()  # EntitlementContext | None
 """
 
 from __future__ import annotations
@@ -22,3 +25,15 @@ current_user_id: contextvars.ContextVar[uuid.UUID | None] = contextvars.ContextV
 current_session_id: contextvars.ContextVar[uuid.UUID | None] = contextvars.ContextVar(
     "current_session_id", default=None,
 )
+
+from app.agents.context.entitlements import (  # noqa: E402
+    EntitlementContext,
+    current_entitlements,
+)
+
+__all__ = [
+    "current_user_id",
+    "current_session_id",
+    "current_entitlements",
+    "EntitlementContext",
+]

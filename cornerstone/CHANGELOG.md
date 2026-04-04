@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.1] - 2026-04-04
+### Fixed
+- Postgres volume mounted at `/var/lib/postgresql` instead of `/var/lib/postgresql/data`, which is the actual `PGDATA` directory in the official image. Data survived `docker compose down` by accident (parent dir includes the subdir) but the mount was non-standard and could cause issues with image variants that set a different `PGDATA`.
+  (files: config/docker-compose.yml)
+
 ## 1.0.0 -- 2026-03-31
 
 Initial extraction from contributr and uad36.

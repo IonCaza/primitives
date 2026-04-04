@@ -6,7 +6,7 @@ services:
       POSTGRES_PASSWORD: myapp_secret
       POSTGRES_DB: myapp
     volumes:
-      - pgdata:/var/lib/postgresql
+      - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:

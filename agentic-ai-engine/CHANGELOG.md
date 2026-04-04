@@ -2,6 +2,47 @@
 
 All notable changes to the agentic-ai-engine primitive will be documented here.
 
+## [1.11.1] - 2026-04-04
+### Fixed
+- **Double tool events in `astream_events`**: `_wrap_tool_isolated` called
+  `target.ainvoke(kwargs)` which runs the inner tool through LangChain's
+  full callback pipeline.  Because `astream_events` installs a
+  `LogStreamCallbackHandler` via `contextvars`, the inner tool inherited it
+  and emitted its own `on_tool_start`/`on_tool_end` in addition to the
+  outer wrapper's events -- producing duplicate `tool_call_start`/
+  `tool_call_end` SSE events (and duplicate console entries) for every
+  non-session-safe tool.  Changed to `target._arun(**kwargs)` which
+  executes the tool logic directly without triggering callbacks.
+  (files: backend/agents/tools/registry.py)
+
+## [1.11.0] - 2026-04-04
+### Added
+- **Supervisor prompt management tools**: `view_agent_prompt` and
+  `update_agent_prompt` allow a supervisor agent to inspect and correct the
+  system prompts of agents within its hierarchy at runtime. Hierarchy
+  enforcement is baked into the closure -- only member agents can be targeted.
+  (files: backend/agents/supervisor.py)
+- **Coordinator prompt guidance** for prompt management: when-to-use heuristics
+  (repeated misinterpretation, outdated schemas) and guardrails (always view
+  before update, preserve working sections).
+  (files: backend/agents/prompts/coordinator.py)
+
+### Changed
+- **Runner** now builds and injects prompt management tools alongside
+  delegation tools for supervisor agents.
+  (files: backend/agents/runner.py)
+
+### Migration notes
+- No schema changes. Purely additive.
+- Consumers that fork `supervisor.py` should import
+  `build_prompt_management_tools` and add
+  `extra_tools.extend(build_prompt_management_tools(member_agents))` in the
+  supervisor block of their runner, or copy the updated `runner.py`.
+- Built-in agents' prompts are still reset on restart by the seed function.
+  To make supervisor prompt edits persistent across restarts, modify the seed
+  logic to skip overwriting when a builtin agent's prompt has been
+  customized (out of scope for this primitive -- consumer decision).
+
 ## [1.10.0] - 2026-04-04
 ### Added
 - **RBAC entitlement framework**: three-layer access model (policy

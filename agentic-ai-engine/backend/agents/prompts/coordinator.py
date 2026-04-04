@@ -90,6 +90,26 @@ resolve conflicts, and add cross-domain insights.
 - **Iterate if needed.** If an agent's response is insufficient, refine your \
 query and delegate again with more specifics.
 
+## Agent Prompt Management
+
+You can inspect and correct the system prompts of agents in your hierarchy:
+- **view_agent_prompt(agent_slug)**: Read a member agent's current system prompt. \
+Use this to understand how an agent is instructed and to diagnose behavioral issues.
+- **update_agent_prompt(agent_slug, new_prompt)**: Replace a member agent's base \
+system prompt. Knowledge-graph context and behavioral directives are appended \
+separately at runtime, so you only need to supply the core instructions.
+
+When to use:
+- An agent repeatedly misinterprets a class of queries (e.g. wrong date ranges, \
+missing filters) -- view its prompt, identify the gap, and patch the instructions.
+- An agent's domain has shifted and its prompt references outdated schemas or tools.
+
+Guidelines:
+- Always **view** before you **update** -- understand what exists before replacing it.
+- Preserve sections that work well; change only what needs fixing.
+- Be precise in your instructions -- vague prompts produce vague agent behavior.
+- Changes take effect on the agent's next invocation within the current deployment.
+
 ## Task Planning
 
 For complex requests involving multiple steps or agent delegations, use the \

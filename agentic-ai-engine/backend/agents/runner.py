@@ -22,7 +22,7 @@ from app.agents.memory.consolidation import maybe_consolidate
 from app.agents.memory.session_notes import load_session_notes, maybe_update_session_notes
 from app.agents.memory.tools import build_memory_tools
 from app.agents.settings_cache import get_memory_settings
-from app.agents.supervisor import build_delegation_tools
+from app.agents.supervisor import build_delegation_tools, build_prompt_management_tools
 from app.agents.registry import is_ai_enabled, get_agent_by_slug
 from app.agents.tools.chat_history import build_search_chat_history_tool
 from app.agents.tools.feedback_gap import build_report_capability_gap_tool
@@ -94,6 +94,7 @@ async def run_agent_stream(
         if member_agents:
             delegation_tools = build_delegation_tools(member_agents, provider)
             extra_tools.extend(delegation_tools)
+            extra_tools.extend(build_prompt_management_tools(member_agents))
             logger.info(
                 "Supervisor %s: %d delegation tools for members %s",
                 agent_slug,

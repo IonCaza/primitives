@@ -642,12 +642,14 @@ export function ChatRuntime({ children, agentSlug, onPresentationUpdate, message
   const onActivitiesLoadedRef = useRef<((groups: ActivityGroup[]) => void) | undefined>(undefined);
   onActivitiesLoadedRef.current = (groups: ActivityGroup[]) => {
     setHistoricalActivities(groups);
+    setLiveAgentMap(new Map());
     if (groups.length > 0) setActivityVisible(true);
   };
 
   const onConsoleLoadedRef = useRef<((groups: ConsoleGroup[]) => void) | undefined>(undefined);
   onConsoleLoadedRef.current = (groups: ConsoleGroup[]) => {
     setHistoricalConsole(groups);
+    setLiveConsoleEntries(new Map());
     if (groups.length > 0) setActivityVisible(true);
   };
 

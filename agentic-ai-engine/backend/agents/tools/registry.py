@@ -60,8 +60,10 @@ def get_definition(slug: str) -> ToolDefinition | None:
 def _wrap_tool_isolated(tool: BaseTool, factory: ToolFactory) -> BaseTool:
     """Wrap a tool so each invocation gets its own DB session.
 
-    Rebuilds the tool via its factory with a fresh session, then invokes it.
-    The original tool's metadata (name, description, args_schema) is preserved.
+    Calls ``_arun`` on the rebuilt tool instead of ``ainvoke`` so the inner
+    tool does not emit its own ``on_tool_start``/``on_tool_end`` callbacks
+    into the parent's ``astream_events`` stream (the outer StructuredTool
+    already handles those).
     """
     from app.db.base import async_session as session_factory
 
@@ -73,7 +75,7 @@ def _wrap_tool_isolated(tool: BaseTool, factory: ToolFactory) -> BaseTool:
             target = fresh_tools.get(tool_name)
             if target is None:
                 return f"Internal error: tool {tool_name} unavailable"
-            return await target.ainvoke(kwargs)
+            return await target._arun(**kwargs)
 
     return StructuredTool(
         name=tool.name,

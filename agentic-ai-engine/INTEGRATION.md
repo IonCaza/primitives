@@ -132,12 +132,13 @@ automatically when `init_memory_pool()` is called at startup.
 Add the packages from `backend/requirements.txt` to your project's requirements:
 
 ```
-langchain>=0.3
-langchain-litellm>=0.3
-langgraph>=0.4
-langgraph-checkpoint-postgres>=2.0
-langmem>=0.1
-litellm>=1.60
+langchain>=1.2
+langchain-community>=0.4
+langchain-litellm>=0.6
+langgraph>=1.1
+langgraph-checkpoint-postgres>=3.0
+langmem>=0.0.30
+litellm>=1.83
 psycopg[binary]>=3.2
 psycopg-pool>=3.2
 cryptography>=44.0
@@ -915,6 +916,7 @@ Configure policies by inserting `AccessPolicy` rows with
 - [ ] Application starts without errors (memory pool initializes, skills seeded)
 - [ ] POST `/api/v1/chat` returns SSE events (requires at least one LLM provider and enabled agent in the DB)
 - [ ] Frontend chat panel renders and connects to the SSE stream
+- [ ] File/image attachments can be added to messages (drag-and-drop or click the + button); requires a vision-capable LLM for image understanding
 - [ ] Agent activity panel shows delegation events for supervisor agents
 - [ ] Memory tools: `save_memory` creates rows in `agent_memories`
 - [ ] Memory recall: relevant memories appear in agent responses when context matches

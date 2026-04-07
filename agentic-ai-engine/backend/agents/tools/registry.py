@@ -75,7 +75,7 @@ def _wrap_tool_isolated(tool: BaseTool, factory: ToolFactory) -> BaseTool:
             target = fresh_tools.get(tool_name)
             if target is None:
                 return f"Internal error: tool {tool_name} unavailable"
-            return await target._arun(**kwargs)
+            return await target.coroutine(**kwargs)
 
     return StructuredTool(
         name=tool.name,

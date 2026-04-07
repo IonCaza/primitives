@@ -26,10 +26,17 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
+class AttachmentContent(BaseModel):
+    type: str
+    data: str
+    name: str = "attachment"
+
+
 class ChatRequest(BaseModel):
     session_id: uuid.UUID | None = None
     message: str
     agent_slug: str = "contribution-analyst"
+    attachments: list[AttachmentContent] | None = None
 
 
 class ChatSessionOut(BaseModel):
@@ -188,6 +195,7 @@ async def send_message(
                 agent_slug=body.agent_slug,
                 session_id=session_id,
                 user_id=user.id,
+                attachments=[a.model_dump() for a in body.attachments] if body.attachments else None,
             ):
                 etype = evt["type"]
                 if etype == "token":

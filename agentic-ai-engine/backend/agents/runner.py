@@ -41,6 +41,7 @@ async def run_agent_stream(
     *,
     session_id: uuid.UUID | None = None,
     user_id: uuid.UUID | None = None,
+    attachments: list[dict[str, str]] | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Run a named agent and yield structured event dicts.
 
@@ -206,7 +207,20 @@ async def run_agent_stream(
     collected = ""
     pending_separator = False
 
-    stream_input = {"messages": [HumanMessage(content=user_input)]}
+    if attachments:
+        content_parts: list[dict[str, Any]] = []
+        if user_input:
+            content_parts.append({"type": "text", "text": user_input})
+        for att in attachments:
+            if att["type"] == "image":
+                content_parts.append(
+                    {"type": "image_url", "image_url": {"url": att["data"]}}
+                )
+            elif att["type"] == "text":
+                content_parts.append({"type": "text", "text": att["data"]})
+        stream_input = {"messages": [HumanMessage(content=content_parts)]}
+    else:
+        stream_input = {"messages": [HumanMessage(content=user_input)]}
 
     async def _consume_stream(attempt: int = 1):
         nonlocal collected, pending_separator

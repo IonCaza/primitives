@@ -15,6 +15,8 @@ registry and partitions them into batches:
 
 Batches execute in the order they appear in the model's tool-call list,
 so the overall call sequence stays deterministic.
+
+Targets langgraph-prebuilt >= 1.0.
 """
 
 from __future__ import annotations
@@ -24,8 +26,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from langchain_core.messages import ToolMessage
 from langgraph.prebuilt import ToolNode
+from langgraph.prebuilt.tool_node import ToolRuntime, get_config_list
 
 from app.agents.tools.registry import is_tool_concurrency_safe
 
@@ -70,16 +72,30 @@ class ParallelToolNode(ToolNode):
     async def _afunc(
         self,
         input: list | dict[str, Any],
-        config: Any = None,
-        **kwargs: Any,
+        config: Any,
+        runtime: Any,
     ) -> Any:
-        tool_calls, input_type = self._parse_input(input, store=kwargs.get("store"))
+        tool_calls, input_type = self._parse_input(input)
 
         if not tool_calls:
             return self._combine_tool_outputs([], input_type)
 
+        config_list = get_config_list(config, len(tool_calls))
+
+        runtimes_by_id: dict[str, ToolRuntime] = {}
+        for call, cfg in zip(tool_calls, config_list, strict=False):
+            state = self._extract_state(input)
+            runtimes_by_id[call["id"]] = ToolRuntime(
+                state=state,
+                tool_call_id=call["id"],
+                config=cfg,
+                context=runtime.context,
+                store=runtime.store,
+                stream_writer=runtime.stream_writer,
+            )
+
         batches = _partition_tool_calls(tool_calls)
-        results: list[ToolMessage] = []
+        results: list = []
 
         n_concurrent = sum(len(b.calls) for b in batches if b.concurrent)
         n_serial = sum(len(b.calls) for b in batches if not b.concurrent)
@@ -92,11 +108,16 @@ class ParallelToolNode(ToolNode):
         for batch in batches:
             if batch.concurrent and len(batch.calls) > 1:
                 batch_results = await asyncio.gather(
-                    *[self._arun_one(tc, input_type, config) for tc in batch.calls]
+                    *[
+                        self._arun_one(tc, input_type, runtimes_by_id[tc["id"]])
+                        for tc in batch.calls
+                    ]
                 )
                 results.extend(batch_results)
             else:
                 for tc in batch.calls:
-                    results.append(await self._arun_one(tc, input_type, config))
+                    results.append(
+                        await self._arun_one(tc, input_type, runtimes_by_id[tc["id"]])
+                    )
 
         return self._combine_tool_outputs(results, input_type)

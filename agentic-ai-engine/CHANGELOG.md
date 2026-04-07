@@ -2,6 +2,56 @@
 
 All notable changes to the agentic-ai-engine primitive will be documented here.
 
+## [1.12.2] - 2026-04-06
+### Fixed
+- **`_wrap_tool_isolated`**: replaced `target._arun(**kwargs)` with
+  `target.coroutine(**kwargs)`.  langchain-core >= 1.2.15 made `config`
+  a required keyword-only parameter on `StructuredTool._arun()`, breaking
+  the session-isolation wrapper which only receives the tool's own
+  arguments from the outer coroutine.  Calling `coroutine` directly
+  executes the tool logic without the callback pipeline (preserving the
+  no-double-events intent from v1.11.1) and without the `config`
+  requirement.
+  (files: backend/agents/tools/registry.py)
+
+## [1.12.1] - 2026-04-06
+### Fixed
+- **ParallelToolNode**: rewritten `_afunc` override to match the
+  langgraph-prebuilt 1.0.x `ToolNode` API.  The previous implementation
+  used the pre-1.0 signature (`config=None, **kwargs`) and passed a
+  spurious `store=` keyword to `_parse_input` (which never accepted it),
+  causing `TypeError: ToolNode._parse_input() got an unexpected keyword
+  argument 'store'` at runtime.  Now constructs per-call `ToolRuntime`
+  instances via `get_config_list` / `_extract_state` and passes them to
+  `_arun_one`, matching the upstream contract.
+  (files: backend/agents/tools/parallel_node.py)
+
+### Changed
+- Minimum langgraph dependency raised from `>=0.4` to `>=1.0`
+  (`langgraph-prebuilt >=1.0`).  The pre-1.0 `ToolNode._afunc` signature
+  (`config, **kwargs`) is no longer supported.
+  (files: backend/agents/tools/parallel_node.py)
+
+### Migration notes
+- Consumers on `langgraph <1.0` must upgrade.  Update your dependency
+  spec to `langgraph>=1.0,<2` and `langgraph-checkpoint-postgres>=3.0,<4`.
+- No code changes beyond the dependency bump; the `ParallelToolNode` API
+  that consumers import is unchanged.
+
+## [1.12.0] - 2026-04-05
+### Added
+- **File and image attachment support in chat**: Users can attach images and
+  text files to chat messages. The frontend registers a `CompositeAttachmentAdapter`
+  (combining `SimpleImageAttachmentAdapter` + `SimpleTextAttachmentAdapter`) with the
+  assistant-ui runtime, resolving the "Attachments are not supported" error. The chat
+  model adapter extracts attachment content from user messages and sends them to the
+  backend as structured `{type, data, name}` objects. The backend `ChatRequest` now
+  accepts an optional `attachments` list, and `run_agent_stream` constructs multimodal
+  `HumanMessage` content (with `image_url` parts for images) when attachments are
+  present, enabling vision-capable LLMs to process uploaded images.
+  (files: frontend/components/chat-runtime.tsx, backend/api/chat.py,
+  backend/agents/runner.py)
+
 ## [1.11.1] - 2026-04-04
 ### Fixed
 - **Double tool events in `astream_events`**: `_wrap_tool_isolated` called

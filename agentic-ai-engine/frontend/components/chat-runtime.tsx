@@ -16,6 +16,9 @@ import {
   unstable_useRemoteThreadListRuntime,
   useAuiState,
   useThreadListItem,
+  SimpleImageAttachmentAdapter,
+  SimpleTextAttachmentAdapter,
+  CompositeAttachmentAdapter,
   type ChatModelAdapter,
   type unstable_RemoteThreadListAdapter,
 } from "@assistant-ui/react";
@@ -118,6 +121,29 @@ export type AgentEventCallback = (
 /*  Chat model adapter (SSE -> assistant-ui)                           */
 /* ------------------------------------------------------------------ */
 
+interface ChatAttachment {
+  type: string;
+  data: string;
+  name: string;
+}
+
+function extractAttachments(
+  msg: (typeof undefined extends never ? never : any) | undefined,
+): ChatAttachment[] {
+  if (!msg || msg.role !== "user") return [];
+  const result: ChatAttachment[] = [];
+  for (const att of msg.attachments ?? []) {
+    for (const part of att.content ?? []) {
+      if (part.type === "image" && part.image) {
+        result.push({ type: "image", data: part.image, name: att.name ?? "image" });
+      } else if (part.type === "text" && part.text) {
+        result.push({ type: "text", data: part.text, name: att.name ?? "file" });
+      }
+    }
+  }
+  return result;
+}
+
 function makeChatModelAdapter(
   agentSlugRef: React.RefObject<string>,
   sessionIdRef: React.MutableRefObject<string | undefined>,
@@ -136,6 +162,8 @@ function makeChatModelAdapter(
         text = messageTransformRef.current(text);
       }
 
+      const attachments = extractAttachments(lastUserMsg);
+
       onRunStart.current?.(text);
 
       const res = await fetch(`${api.getApiBase()}/chat`, {
@@ -150,6 +178,7 @@ function makeChatModelAdapter(
           session_id: sessionId,
           message: text,
           agent_slug: agentSlugRef.current,
+          ...(attachments.length > 0 ? { attachments } : {}),
         }),
         signal: abortSignal,
       });
@@ -458,7 +487,15 @@ function RuntimeHook({
     () => makeChatModelAdapter(agentSlugRef, sessionIdRef, onAgentEventRef, onRunStartRef, messageTransformRef),
     [agentSlugRef, sessionIdRef, onAgentEventRef, onRunStartRef, messageTransformRef],
   );
-  return useLocalRuntime(adapter, { adapters: { history } });
+  const attachmentAdapter = useMemo(
+    () =>
+      new CompositeAttachmentAdapter([
+        new SimpleImageAttachmentAdapter(),
+        new SimpleTextAttachmentAdapter(),
+      ]),
+    [],
+  );
+  return useLocalRuntime(adapter, { adapters: { history, attachments: attachmentAdapter } });
 }
 
 function ThreadSwitchDetector({ onSwitchRef }: { onSwitchRef: React.RefObject<(() => void) | undefined> }) {

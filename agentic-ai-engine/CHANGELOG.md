@@ -2,6 +2,15 @@
 
 All notable changes to the agentic-ai-engine primitive will be documented here.
 
+## [1.12.3] - 2026-04-06
+### Fixed
+- **`backend/requirements.txt`**: aligned dependency minimums with
+  INTEGRATION.md and the versions validated in contributr/uad36.
+  Previous ranges (`langchain>=0.3`, `langgraph>=0.4`, etc.) still
+  pointed at pre-1.0 releases that are incompatible with the
+  ParallelToolNode and registry fixes introduced in 1.12.1-1.12.2.
+  (files: backend/requirements.txt)
+
 ## [1.12.2] - 2026-04-06
 ### Fixed
 - **`_wrap_tool_isolated`**: replaced `target._arun(**kwargs)` with

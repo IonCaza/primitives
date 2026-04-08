@@ -1,20 +1,25 @@
 name: observability
-version: "1.0.0"
+version: "2.0.0"
 description: >
-  Full observability stack: OpenTelemetry SDK + Collector, Grafana Tempo
+  Full observability stack: OpenTelemetry Collector + Grafana Tempo
   (distributed tracing), Prometheus (metrics), Loki (logs), Grafana
-  (visualization), and LangFuse (LLM/agent tracing). Auto-instruments
-  SQLAlchemy, Redis, httpx, and FastAPI. Includes custom agent metrics.
+  (visualization), and Langfuse v3 (LLM/agent tracing with ClickHouse
+  analytics, async worker, and S3/MinIO blob storage). The Python module
+  provides Langfuse callback handlers and trace propagation; OTel SDK
+  setup is handled via environment-based auto-instrumentation.
 
 stack:
   frontend: []
-  backend: [python, fastapi, opentelemetry]
+  backend: [python, fastapi, langfuse]
   persistence: []
-  infrastructure: [docker, otel-collector, grafana, tempo, prometheus, loki, langfuse]
+  infrastructure: [docker, otel-collector, grafana, tempo, prometheus, loki, langfuse, clickhouse, minio]
 
 requires_primitives:
   - name: agentic-ai-engine
-    reason: "Agent metrics (runs, duration, tool calls, errors) instrument the agent engine"
+    reason: "Langfuse callbacks instrument agent LLM calls in the agent engine"
+    optional: true
+  - name: cornerstone
+    reason: "Redis service is shared with Langfuse v3 worker"
     optional: true
 
 provides:
@@ -22,19 +27,15 @@ provides:
   api_routes: []
   frontend_components: []
   infrastructure_services:
-    - otel-collector (OTLP receiver, routes to Tempo/Prometheus/Loki)
-    - tempo (distributed trace storage)
-    - prometheus (metrics storage + scraping)
-    - loki (log aggregation)
-    - grafana (visualization dashboards)
-    - langfuse + langfuse-db (LLM/agent trace analysis)
+    - otel-collector (OTLP receiver, routes to Tempo/Prometheus/Loki) [optional]
+    - tempo (distributed trace storage) [optional]
+    - prometheus (metrics storage + scraping) [optional]
+    - loki (log aggregation) [optional]
+    - grafana (visualization dashboards) [optional]
+    - langfuse + langfuse-db + langfuse-worker + langfuse-clickhouse (LLM/agent trace analysis)
+    - minio (S3-compatible blob store for Langfuse event/media uploads)
 
 extension_points:
-  - name: "Custom metrics"
-    location: "backend/core/telemetry.py"
-    description: >
-      Use get_meter() and get_tracer() to add domain-specific
-      metrics and spans beyond the built-in agent metrics.
   - name: "Grafana dashboards"
     location: "config/grafana/provisioning/dashboards/"
     description: >
@@ -43,8 +44,16 @@ extension_points:
     location: "config/prometheus.yaml"
     description: >
       Add alerting rules to the Prometheus configuration.
+  - name: "Custom Langfuse callbacks"
+    location: "backend/core/telemetry.py"
+    description: >
+      Use create_langfuse_handler() and langfuse_propagate_attributes()
+      to instrument custom LLM call patterns.
 
 extracted_from:
+  - repo: uad36
+    commit: 04d307d15e27d7176b91496b254973f9e855b6d3
+    date: "2026-04-08"
   - repo: uad36
     commit: 991a840d1abc44c06187418b974f3628cbbd08a7
     date: "2026-03-31"

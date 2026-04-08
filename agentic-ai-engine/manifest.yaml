@@ -1,5 +1,5 @@
 name: agentic-ai-engine
-version: "1.12.2"
+version: "1.12.3"
 description: >
   Full-stack multi-agent AI engine with LangGraph supervisor pattern,
   DB-driven agent configuration, 3-tier memory (checkpoint + summarization +

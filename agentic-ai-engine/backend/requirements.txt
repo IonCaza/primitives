@@ -2,14 +2,15 @@
 # Add these to your project's requirements.txt
 
 # LangChain ecosystem
-langchain>=0.3
-langchain-litellm>=0.3
-langgraph>=0.4
-langgraph-checkpoint-postgres>=2.0
-langmem>=0.1
+langchain>=1.2
+langchain-community>=0.4
+langchain-litellm>=0.6
+langgraph>=1.1
+langgraph-checkpoint-postgres>=3.0
+langmem>=0.0.30
 
 # LLM gateway
-litellm>=1.60
+litellm>=1.83
 
 # LangGraph memory infrastructure (psycopg, not asyncpg)
 psycopg[binary]>=3.2

@@ -8,24 +8,22 @@
 - [ ] FastAPI backend application
 - [ ] Docker Compose for local development
 - [ ] Python 3.11+
+- [ ] A Redis service (typically provided by the cornerstone primitive)
 
 ## 1. Backend Layer
 
 ### 1.1 Dependencies
 
-Add to your `requirements.txt`:
+Add to your `requirements.txt` (or `pyproject.toml`):
 
 ```
-opentelemetry-api>=1.20
-opentelemetry-sdk>=1.20
-opentelemetry-exporter-otlp-proto-grpc>=1.20
-opentelemetry-instrumentation-fastapi>=0.41
-opentelemetry-instrumentation-sqlalchemy>=0.41
-opentelemetry-instrumentation-redis>=0.41
-opentelemetry-instrumentation-httpx>=0.41
-opentelemetry-instrumentation-logging>=0.41
 langfuse>=2.0
 ```
+
+**Note:** OTel SDK packages (`opentelemetry-api`, `opentelemetry-sdk`,
+`opentelemetry-instrumentation-*`) are no longer required by the telemetry
+module. If you want OTel auto-instrumentation, install those packages
+separately and configure via environment variables.
 
 ### 1.2 Module Placement
 
@@ -33,45 +31,13 @@ Copy `backend/core/telemetry.py` into your backend's core module
 (e.g., `app/core/telemetry.py`).
 
 **Adaptation notes:**
-- Change the default `get_tracer()` and `get_meter()` name arguments
-  to match your app name (e.g., `"myapp.backend"`, `"myapp.agents"`)
 - The module has no imports from other app modules -- it's fully standalone
+- It only provides Langfuse integration; OTel SDK setup is handled via
+  environment variables (see Section 1.5)
 
-### 1.3 Initialization
+### 1.3 Langfuse Integration
 
-Call `init_telemetry()` **before** creating your FastAPI app and any
-SQLAlchemy engines, so auto-instrumentation can monkey-patch them:
-
-```python
-# main.py
-from app.core.telemetry import init_telemetry, instrument_app
-
-init_telemetry()  # Must be called FIRST
-
-app = FastAPI()
-instrument_app(app)  # Adds FastAPI middleware for request tracing
-```
-
-### 1.4 Agent Metrics (Optional)
-
-If using the `agentic-ai-engine` primitive, instrument agent runs:
-
-```python
-from app.core.telemetry import record_agent_run, record_tool_call, record_agent_error
-
-# In your agent runner, after each run completes:
-record_agent_run(agent_slug, duration_ms)
-
-# In your tool execution wrapper:
-record_tool_call(agent_slug, tool_name)
-
-# On agent errors:
-record_agent_error(agent_slug)
-```
-
-### 1.5 LangFuse Integration (Optional)
-
-For LLM/agent tracing with LangFuse:
+For LLM/agent tracing with Langfuse:
 
 ```python
 from app.core.telemetry import create_langfuse_handler, langfuse_propagate_attributes
@@ -89,21 +55,41 @@ with langfuse_propagate_attributes(
     result = await agent.ainvoke(input, config={"callbacks": callbacks})
 ```
 
-### 1.6 Environment Variables
+### 1.4 Environment Variables
 
 Add to your backend service's environment:
 
 ```bash
+# Langfuse (required for LLM tracing)
+LANGFUSE_HOST=http://langfuse:3000
+LANGFUSE_PUBLIC_KEY=pk-lf-your-key       # ADAPT: match docker-compose init keys
+LANGFUSE_SECRET_KEY=sk-lf-your-key       # ADAPT: match docker-compose init keys
+
+# OTel (optional, only if enabling the traces/metrics/logs stack)
 OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
 OTEL_SERVICE_NAME=your-app-backend
-
-# LangFuse (optional, for LLM tracing)
-LANGFUSE_HOST=http://langfuse:3000
-LANGFUSE_PUBLIC_KEY=pk-lf-your-key
-LANGFUSE_SECRET_KEY=sk-lf-your-key
 ```
 
-Telemetry gracefully no-ops when `OTEL_EXPORTER_OTLP_ENDPOINT` is unset.
+The Langfuse module gracefully no-ops when `LANGFUSE_HOST` is unset.
+
+### 1.5 OTel Auto-Instrumentation (Optional)
+
+If you enable the OTel/Grafana stack (Section 2.2), configure OTel SDK
+via environment variables on your backend service rather than programmatic
+setup. This allows the OTel agent to instrument SQLAlchemy, Redis, httpx,
+FastAPI, etc. without code changes:
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+OTEL_SERVICE_NAME=your-app-backend
+OTEL_TRACES_EXPORTER=otlp
+OTEL_METRICS_EXPORTER=otlp
+OTEL_LOGS_EXPORTER=otlp
+```
+
+Alternatively, install `opentelemetry-distro` and run your app with
+`opentelemetry-instrument python -m uvicorn ...` for zero-code
+instrumentation.
 
 ## 2. Infrastructure
 
@@ -130,34 +116,55 @@ observability/
 ### 2.2 Docker Compose
 
 Merge `docker/docker-compose.fragment.yml` into your project's
-docker-compose. The fragment adds 7 services:
+docker-compose. The fragment provides two groups of services:
 
+**Langfuse v3 stack (always active):**
+- `langfuse-db` -- Postgres for Langfuse metadata
+- `langfuse-clickhouse` -- ClickHouse analytics backend
+- `langfuse-worker` -- Async background worker for trace processing
+- `langfuse` -- Web UI + API (port 3002)
+- `minio` -- S3-compatible blob store for event/media uploads (ports 9000, 9001)
+
+**OTel/Grafana stack (commented out, uncomment to enable):**
 - `otel-collector` -- Receives OTLP, routes to Tempo/Prometheus/Loki
 - `tempo` -- Distributed trace storage (port 3200)
 - `prometheus` -- Metrics storage + scraping (port 9090)
 - `loki` -- Log aggregation (port 3100)
 - `grafana` -- Visualization (port 3001)
-- `langfuse-db` -- Postgres for LangFuse
-- `langfuse` -- LLM/agent tracing UI (port 3002)
 
 **Adaptation notes:**
-- Change LangFuse init org/project names and keys
+- Change Langfuse init org/project names, keys, and admin credentials
+- The `langfuse-worker` expects a `redis` service -- if your app already
+  has one (e.g., from cornerstone), it will be shared. If not, you need
+  to add a Redis service and add `redis` to `langfuse-worker.depends_on`.
 - Adjust host port mappings if they conflict with your app
-- Add `depends_on: otel-collector` to your backend service
+- Add `depends_on: langfuse-db` to your backend if it needs to wait for
+  Langfuse to be ready
+- For production: use env var substitution for secrets (see the prod
+  docker-compose in uad36 for reference)
+
+**YAML anchor pattern:** The fragment uses `&langfuse-env` on
+`langfuse-worker` and `<<: *langfuse-env` on `langfuse` to share the
+~30 environment variables. Keep this pattern when adapting.
 
 ### 2.3 Data Directories
 
 The services store data in `.docker-data/`:
 ```
 .docker-data/
-  tempo/
-  prometheus/
-  loki/
-  grafana/
   langfuse-db/
+  langfuse-clickhouse/
+  langfuse-clickhouse-logs/
+  minio/
+  tempo/          # if OTel stack enabled
+  prometheus/     # if OTel stack enabled
+  loki/           # if OTel stack enabled
+  grafana/        # if OTel stack enabled
 ```
 
 Add `.docker-data/` to your `.gitignore`.
+
+For production, use named Docker volumes instead of bind mounts.
 
 ## 3. Grafana Dashboards (Extension Point)
 
@@ -181,9 +188,9 @@ The base installation provisions datasources only. To add dashboards:
 
 ## 4. Verification
 
-- [ ] `docker compose up` starts all 7 observability services
-- [ ] Backend logs show "OpenTelemetry initialised" on startup
-- [ ] Grafana (http://localhost:3001) shows Tempo, Prometheus, and Loki datasources
-- [ ] Prometheus (http://localhost:9090) shows metrics from otel-collector
-- [ ] Tempo traces appear in Grafana Explore > Tempo after making API requests
-- [ ] LangFuse (http://localhost:3002) shows LLM traces after agent runs (if configured)
+- [ ] `docker compose up` starts Langfuse stack (langfuse-db, langfuse-clickhouse, langfuse-worker, langfuse, minio)
+- [ ] Backend logs show "LangFuse enabled" on startup (when env vars are set)
+- [ ] Langfuse UI (http://localhost:3002) is accessible and shows the configured project
+- [ ] After an agent run, traces appear in Langfuse with session/user/agent metadata
+- [ ] (If OTel stack enabled) Grafana (http://localhost:3001) shows Tempo, Prometheus, Loki datasources
+- [ ] (If OTel stack enabled) Tempo traces appear after making API requests

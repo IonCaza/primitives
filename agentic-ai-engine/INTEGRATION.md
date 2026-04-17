@@ -70,7 +70,8 @@ the source applications.
 
 10. **AgentActivity** -- Delegation activity records:
     - `id` (UUID PK), `session_id` (FK), `trigger_message_id` (UUID),
-      `response_message_id` (UUID), `agent_slug`, `run_id`, `content` (Text),
+      `response_message_id` (UUID), `agent_slug`, `run_id`,
+      `delegation_query` (Text, default ""), `content` (Text),
       `started_at`, `finished_at` (nullable)
 
 11. **Feedback** -- Capability gap reports:
@@ -98,6 +99,16 @@ the source applications.
       `description` (Text nullable), `prompt_content` (Text),
       `applicable_agents` (PostgreSQL `ARRAY(String(100))` nullable; NULL = all agents),
       `auto_inject` (Boolean), `is_active` (Boolean), `created_at` (timestamptz)
+
+15. **ConsoleEntry** -- Tool call and thinking block records (canonical: `schema/console_entry.py`):
+    - `id` (UUID PK), `session_id` (FK to ChatSession, CASCADE),
+      `message_id` (FK to ChatMessage, CASCADE),
+      `entry_type` (String 20), `sequence` (Integer),
+      `tool_name` (String 255 nullable), `tool_args` (JSONB nullable),
+      `tool_result` (Text nullable), `thinking_content` (Text nullable),
+      `started_at` (timestamptz), `finished_at` (timestamptz nullable),
+      `created_at` (timestamptz)
+    - Index: `ix_console_entries_session_message` on `(session_id, message_id)`
 
 **Adaptation notes:**
 - Import paths for `Base` declarative base: update to your project's location
@@ -424,6 +435,7 @@ interface AgentActivityRecord {
   trigger_message_id: string;
   agent_slug: string;
   run_id: string;
+  delegation_query: string;
   content: string;
   started_at: string;
   finished_at: string | null;

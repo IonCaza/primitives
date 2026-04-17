@@ -6,6 +6,10 @@ from langchain_core.tools import BaseTool, StructuredTool
 from sqlalchemy import select
 
 from app.agents.base import build_agent
+from app.agents.context import current_session_id, current_user_id
+from app.agents.memory.recall import format_recalled_for_prompt, recall_relevant_memories
+from app.agents.memory.session_notes import load_session_notes
+from app.agents.settings_cache import get_memory_settings
 from app.db.base import async_session
 from app.db.models.agent_config import AgentConfig
 from app.db.models.llm_provider import LlmProvider
@@ -18,18 +22,59 @@ def _make_child_runner(member, provider):
 
     Each invocation creates its own database session so that a failure in
     one child agent does not poison the transaction for sibling agents.
+    The child receives session notes and recalled memories so it can
+    understand the ongoing conversation without its own checkpoint history.
     """
 
     async def _run_child(query: str) -> str:
         logger.info("Supervisor delegating to %s: %s", member.slug, query[:120])
         try:
+            session_id = current_session_id.get(None)
+            user_id = current_user_id.get(None)
+
+            session_context = ""
+            if session_id:
+                try:
+                    notes, _ = await load_session_notes(session_id)
+                    if notes:
+                        session_context = (
+                            "\n\n<session_context>\n"
+                            "The following session notes describe the current conversation "
+                            "so far. Use this as your PRIMARY context for understanding "
+                            "what the user is working on. Do NOT ask the user to clarify "
+                            "information that is already in these notes.\n\n"
+                            f"{notes}\n"
+                            "</session_context>"
+                        )
+                except Exception:
+                    logger.debug("Failed to load session notes for child agent", exc_info=True)
+
+            recalled_context = ""
+            if user_id:
+                try:
+                    mem_settings = await get_memory_settings()
+                    if mem_settings.memory_enabled:
+                        from app.agents.llm.manager import build_llm_from_provider
+                        recall_llm = build_llm_from_provider(provider, streaming=False)
+                        async with async_session() as recall_db:
+                            recalled = await recall_relevant_memories(
+                                recall_db, user_id, query, recall_llm,
+                            )
+                            recalled_context = format_recalled_for_prompt(recalled)
+                except Exception:
+                    logger.debug("Failed to recall memories for child agent", exc_info=True)
+
             async with async_session() as child_db:
                 child_agent, max_iter = build_agent(
-                    member, provider, child_db, extra_tools=None,
+                    member, provider, child_db,
+                    extra_tools=None,
+                    recalled_context=recalled_context,
                 )
                 child_thread = str(uuid.uuid4())
+                full_query = query + session_context
+
                 result = await child_agent.ainvoke(
-                    {"messages": [HumanMessage(content=query)]},
+                    {"messages": [HumanMessage(content=full_query)]},
                     config={
                         "configurable": {"thread_id": child_thread},
                         "recursion_limit": (max_iter or 25) * 2,
@@ -66,7 +111,10 @@ def build_delegation_tools(
         tool_desc = (
             f"Delegate a question to the {member.name} agent. "
             f"{member.description or ''} "
-            f"Use this when the user's question falls within this agent's domain."
+            f"Use this when the user's question falls within this agent's domain. "
+            f"IMPORTANT: Always include full context in the query — the specific "
+            f"entities, identifiers, any relevant details, and the specific question. "
+            f"The delegated agent cannot see prior conversation messages."
         ).strip()
 
         runner = _make_child_runner(member, fallback_provider)

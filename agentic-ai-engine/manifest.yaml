@@ -1,5 +1,5 @@
 name: agentic-ai-engine
-version: "1.12.3"
+version: "1.13.0"
 description: >
   Full-stack multi-agent AI engine with LangGraph supervisor pattern,
   DB-driven agent configuration, 3-tier memory (checkpoint + summarization +
@@ -32,6 +32,7 @@ provides:
     - AgentSkill
     - AccessPolicy
     - ResourceGrant
+    - ConsoleEntry
   api_routes:
     - { path: "/api/v1/chat", methods: [POST, GET, PATCH, DELETE], description: "SSE streaming chat + session CRUD" }
     - { path: "/api/v1/agents", methods: [GET, POST, PUT, DELETE], description: "Agent configuration CRUD" }

@@ -33,6 +33,7 @@ import type { AgentActivityRecord, ConsoleEntryRecord } from "@/lib/types";
 
 export interface ChildAgent {
   slug: string;
+  query: string;
   content: string;
   done: boolean;
 }
@@ -40,7 +41,7 @@ export interface ChildAgent {
 export interface ActivityGroup {
   triggerMessageId: string;
   triggerContent: string;
-  agents: { runId: string; slug: string; content: string; done: boolean }[];
+  agents: { runId: string; slug: string; query: string; content: string; done: boolean }[];
 }
 
 export interface LiveConsoleEntry {
@@ -153,7 +154,14 @@ function makeChatModelAdapter(
 ): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal }) {
-      const sessionId = sessionIdRef.current;
+      let sessionId = sessionIdRef.current;
+      if (!sessionId) {
+        for (let i = 0; i < 20; i++) {
+          await new Promise((r) => setTimeout(r, 50));
+          sessionId = sessionIdRef.current;
+          if (sessionId) break;
+        }
+      }
       const lastUserMsg = messages.findLast((m) => m.role === "user");
       let text =
         lastUserMsg?.content.find((c) => c.type === "text")?.text ?? "";
@@ -213,6 +221,7 @@ function makeChatModelAdapter(
 
               if (currentEvent === "session" && data.session_id) {
                 sessionIdRef.current = data.session_id;
+                onAgentEvent.current?.("session", data);
               } else if (currentEvent === "thinking" && data.content !== undefined) {
                 thinkingAccumulated += data.content;
                 onAgentEvent.current?.(currentEvent, data);
@@ -279,6 +288,7 @@ function buildActivityGroups(
       agents: msg.agent_activities.map((a) => ({
         runId: a.run_id,
         slug: a.agent_slug,
+        query: a.delegation_query ?? "",
         content: a.content,
         done: true,
       })),
@@ -476,7 +486,11 @@ function RuntimeHook({
       s.threadListItem.remoteId,
   );
   const effectiveRemoteId = remoteId ?? fixedSessionId;
-  sessionIdRef.current = effectiveRemoteId;
+  const prevRemoteIdRef = useRef<string | undefined>(undefined);
+  if (effectiveRemoteId !== prevRemoteIdRef.current) {
+    prevRemoteIdRef.current = effectiveRemoteId;
+    sessionIdRef.current = effectiveRemoteId;
+  }
 
   useEffect(() => {
     onThreadSwitchRef.current?.();
@@ -582,12 +596,14 @@ export function ChatRuntime({ children, agentSlug, onPresentationUpdate, message
   const onAgentEventRef = useRef<AgentEventCallback | undefined>(undefined);
   onAgentEventRef.current = (event: string, data: Record<string, any>) => {
     ensureSessionClean();
-    if (event === "agent_start") {
+    if (event === "session" && data.session_id) {
+      setCurrentSessionId(data.session_id);
+    } else if (event === "agent_start") {
       activeCountRef.current += 1;
       setActivityVisible(true);
       setLiveAgentMap((prev) => {
         const next = new Map(prev);
-        next.set(data.run_id, { slug: data.slug, content: "", done: false });
+        next.set(data.run_id, { slug: data.slug, query: data.query || "", content: "", done: false });
         return next;
       });
     } else if (event === "agent_token") {
@@ -671,7 +687,10 @@ export function ChatRuntime({ children, agentSlug, onPresentationUpdate, message
     } else if (event === "presentation_update" && data.presentation_id) {
       onPresentationUpdate?.(data.presentation_id);
     } else if (event === "task_update") {
-      setCurrentSessionId(sessionIdRef.current);
+      const taskSessionId = data.session_id ?? sessionIdRef.current;
+      if (taskSessionId) {
+        setCurrentSessionId(taskSessionId);
+      }
       setTaskUpdateCounter((c) => c + 1);
     }
   };

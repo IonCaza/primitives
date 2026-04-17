@@ -47,9 +47,14 @@ async def run_agent_stream(
 
     Event types:
         {"type": "token", "content": str}
-        {"type": "agent_start", "run_id": str, "slug": str}
+        {"type": "thinking", "content": str}
+        {"type": "agent_start", "run_id": str, "slug": str, "query": str}
         {"type": "agent_token", "run_id": str, "content": str}
         {"type": "agent_done", "run_id": str}
+        {"type": "tool_call_start", "run_id": str, "tool_name": str, "args": dict}
+        {"type": "tool_call_end", "run_id": str, "tool_name": str, "result": str}
+        {"type": "task_update", "session_id": str}
+        {"type": "presentation_update", "presentation_id": str}
 
     The checkpointer handles message history natively via thread_id.
     Only the new user message is passed in; all prior context is loaded
@@ -236,14 +241,25 @@ async def run_agent_stream(
 
             if kind == "on_tool_start" and name.startswith(DELEGATION_PREFIX):
                 slug = name[len(DELEGATION_PREFIX):].replace("_", "-")
-                active_delegations[run_id] = {"slug": slug}
-                yield {"type": "agent_start", "run_id": run_id, "slug": slug}
+                tool_input = event.get("data", {}).get("input", {})
+                query_text = ""
+                if isinstance(tool_input, dict):
+                    query_text = tool_input.get("query", "")
+                elif isinstance(tool_input, str):
+                    query_text = tool_input
+                active_delegations[run_id] = {"slug": slug, "query": query_text}
+                yield {"type": "agent_start", "run_id": run_id, "slug": slug, "query": query_text}
 
             elif kind == "on_tool_start" and name in _PRES_TOOLS:
                 tool_input = event.get("data", {}).get("input", {})
                 pid = tool_input.get("presentation_id", "") if isinstance(tool_input, dict) else ""
                 if pid:
                     pending_pres_ids[run_id] = pid
+                yield {"type": "tool_call_start", "run_id": run_id, "tool_name": name, "args": (tool_input if isinstance(tool_input, dict) else {})}
+
+            elif kind == "on_tool_start":
+                tool_input = event.get("data", {}).get("input", {})
+                yield {"type": "tool_call_start", "run_id": run_id, "tool_name": name, "args": (tool_input if isinstance(tool_input, dict) else {})}
 
             elif kind == "on_tool_end" and name.startswith(DELEGATION_PREFIX):
                 info = active_delegations.pop(run_id, None)
@@ -261,15 +277,20 @@ async def run_agent_stream(
                     pres_id = pending_pres_ids.pop(run_id, None)
                 if pres_id and not tool_output.startswith("Error:"):
                     yield {"type": "presentation_update", "presentation_id": pres_id}
+                yield {"type": "tool_call_end", "run_id": run_id, "tool_name": name, "result": tool_output[:2000]}
                 if collected:
                     pending_separator = True
 
             elif kind == "on_tool_end" and name in _TASK_TOOLS:
+                tool_output = str(event.get("data", {}).get("output", ""))
                 yield {"type": "task_update", "session_id": str(session_id)}
+                yield {"type": "tool_call_end", "run_id": run_id, "tool_name": name, "result": tool_output[:2000]}
                 if collected:
                     pending_separator = True
 
             elif kind == "on_tool_end":
+                tool_output = str(event.get("data", {}).get("output", ""))
+                yield {"type": "tool_call_end", "run_id": run_id, "tool_name": name, "result": tool_output[:2000]}
                 if collected:
                     pending_separator = True
 

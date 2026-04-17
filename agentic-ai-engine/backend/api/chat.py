@@ -16,6 +16,7 @@ from app.auth.dependencies import get_current_user
 from app.db.base import get_db
 from app.db.models.chat import ChatSession, ChatMessage, MessageRole
 from app.db.models.agent_activity import AgentActivity
+from app.db.models.console_entry import ConsoleEntry
 from app.db.models.ai_settings import AiSettings, SINGLETON_ID
 from app.db.models.agent_config import AgentConfig
 from app.db.models.task_item import TaskItem
@@ -55,7 +56,22 @@ class AgentActivityOut(BaseModel):
     trigger_message_id: uuid.UUID
     agent_slug: str
     run_id: str
+    delegation_query: str = ""
     content: str
+    started_at: datetime
+    finished_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class ConsoleEntryOut(BaseModel):
+    id: uuid.UUID
+    entry_type: str
+    sequence: int = 0
+    tool_name: str | None = None
+    tool_args: dict | None = None
+    tool_result: str | None = None
+    thinking_content: str | None = None
     started_at: datetime
     finished_at: datetime | None = None
 
@@ -68,6 +84,7 @@ class ChatMessageOut(BaseModel):
     content: str
     created_at: datetime
     agent_activities: list[AgentActivityOut] = []
+    console_entries: list[ConsoleEntryOut] = []
 
     model_config = {"from_attributes": True}
 
@@ -78,8 +95,9 @@ async def _persist_response(
     content: str,
     trigger_message_id: uuid.UUID | None = None,
     agent_activities: list[dict] | None = None,
+    console_entries: list[dict] | None = None,
 ) -> None:
-    """Save the assistant response, any agent activities, and update the session.
+    """Save the assistant response, any agent activities, console entries, and update the session.
 
     Retries once after rollback in case the session was poisoned by a
     prior failed transaction.
@@ -105,10 +123,30 @@ async def _persist_response(
                         response_message_id=assistant_msg.id,
                         agent_slug=act["slug"],
                         run_id=act["run_id"],
+                        delegation_query=act.get("delegation_query", ""),
                         content=act["content"],
                         started_at=act["started_at"],
                         finished_at=act.get("finished_at"),
                     ))
+
+            if console_entries:
+                try:
+                    async with db.begin_nested():
+                        for idx, ce in enumerate(console_entries):
+                            db.add(ConsoleEntry(
+                                session_id=session_id,
+                                message_id=assistant_msg.id,
+                                entry_type=ce["entry_type"],
+                                sequence=idx,
+                                tool_name=ce.get("tool_name"),
+                                tool_args=ce.get("tool_args"),
+                                tool_result=ce.get("tool_result"),
+                                thinking_content=ce.get("thinking_content"),
+                                started_at=ce["started_at"],
+                                finished_at=ce.get("finished_at"),
+                            ))
+                except Exception:
+                    logger.warning("Failed to persist console entries (non-fatal)")
 
             await db.execute(
                 update(ChatSession)
@@ -188,6 +226,8 @@ async def send_message(
     async def event_generator():
         collected = ""
         activities: dict[str, dict] = {}
+        console_log: list[dict] = []
+        thinking_acc = ""
         try:
             yield {"event": "session", "data": json.dumps({"session_id": str(session_id)})}
             async for evt in run_agent_stream(
@@ -202,16 +242,18 @@ async def send_message(
                     collected += evt["content"]
                     yield {"event": "token", "data": json.dumps({"content": evt["content"]})}
                 elif etype == "thinking":
+                    thinking_acc += evt["content"]
                     yield {"event": "thinking", "data": json.dumps({"content": evt["content"]})}
                 elif etype == "agent_start":
                     activities[evt["run_id"]] = {
                         "slug": evt["slug"],
                         "run_id": evt["run_id"],
+                        "delegation_query": evt.get("query", ""),
                         "content": "",
                         "started_at": datetime.now(timezone.utc),
                         "finished_at": None,
                     }
-                    yield {"event": "agent_start", "data": json.dumps({"run_id": evt["run_id"], "slug": evt["slug"]})}
+                    yield {"event": "agent_start", "data": json.dumps({"run_id": evt["run_id"], "slug": evt["slug"], "query": evt.get("query", "")})}
                 elif etype == "agent_token":
                     act = activities.get(evt["run_id"])
                     if act:
@@ -222,10 +264,38 @@ async def send_message(
                     if act:
                         act["finished_at"] = datetime.now(timezone.utc)
                     yield {"event": "agent_done", "data": json.dumps({"run_id": evt["run_id"]})}
+                elif etype == "tool_call_start":
+                    console_log.append({
+                        "run_id": evt["run_id"],
+                        "entry_type": "tool_call",
+                        "tool_name": evt.get("tool_name"),
+                        "tool_args": evt.get("args"),
+                        "started_at": datetime.now(timezone.utc),
+                    })
+                    yield {"event": "tool_call_start", "data": json.dumps({"run_id": evt["run_id"], "tool_name": evt.get("tool_name"), "args": evt.get("args")})}
+                elif etype == "tool_call_end":
+                    for ce in reversed(console_log):
+                        if ce.get("run_id") == evt["run_id"] and ce["entry_type"] == "tool_call" and not ce.get("finished_at"):
+                            ce["tool_result"] = evt.get("result")
+                            ce["finished_at"] = datetime.now(timezone.utc)
+                            break
+                    yield {"event": "tool_call_end", "data": json.dumps({"run_id": evt["run_id"], "tool_name": evt.get("tool_name"), "result": evt.get("result")})}
                 elif etype == "presentation_update":
                     yield {"event": "presentation_update", "data": json.dumps({"presentation_id": evt["presentation_id"]})}
                 elif etype == "task_update":
                     yield {"event": "task_update", "data": json.dumps({"session_id": evt["session_id"]})}
+                elif etype == "error":
+                    collected = evt.get("content", "Access denied.")
+                    yield {"event": "error", "data": json.dumps({"detail": collected})}
+
+            if thinking_acc:
+                console_log.append({
+                    "entry_type": "thinking",
+                    "thinking_content": thinking_acc,
+                    "started_at": datetime.now(timezone.utc),
+                    "finished_at": datetime.now(timezone.utc),
+                })
+
             yield {"event": "done", "data": json.dumps({"content": collected})}
         except Exception as exc:
             logger.exception("Agent streaming error")
@@ -242,12 +312,14 @@ async def send_message(
         finally:
             content = collected or "No response generated."
             activity_list = list(activities.values()) if activities else None
+            console_list = [ce for ce in console_log if "run_id" not in ce or ce.get("entry_type")] or None
             try:
                 await asyncio.shield(
                     _persist_response(
                         db, session_id, content,
                         trigger_message_id=trigger_message_id,
                         agent_activities=activity_list,
+                        console_entries=console_list,
                     )
                 )
             except asyncio.CancelledError:
@@ -356,15 +428,28 @@ async def get_session_messages(
     for act in activities:
         acts_by_response.setdefault(act.response_message_id, []).append(act)
 
+    ce_result = await db.execute(
+        select(ConsoleEntry)
+        .where(ConsoleEntry.session_id == session_id)
+        .order_by(ConsoleEntry.sequence)
+    )
+    console_entries = ce_result.scalars().all()
+
+    ce_by_message: dict[uuid.UUID, list[ConsoleEntry]] = {}
+    for ce in console_entries:
+        ce_by_message.setdefault(ce.message_id, []).append(ce)
+
     out: list[ChatMessageOut] = []
     for msg in messages:
         msg_acts = acts_by_response.get(msg.id, [])
+        msg_ces = ce_by_message.get(msg.id, [])
         out.append(ChatMessageOut(
             id=msg.id,
             role=msg.role.value if hasattr(msg.role, "value") else msg.role,
             content=msg.content,
             created_at=msg.created_at,
             agent_activities=[AgentActivityOut.model_validate(a) for a in msg_acts],
+            console_entries=[ConsoleEntryOut.model_validate(ce) for ce in msg_ces],
         ))
     return out
 

@@ -209,6 +209,7 @@ class AgentActivity(Base):
     response_message_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     agent_slug: Mapped[str] = mapped_column(String(100))
     run_id: Mapped[str] = mapped_column(String(255))
+    delegation_query: Mapped[str] = mapped_column(Text, default="")
     content: Mapped[str] = mapped_column(Text, default="")
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

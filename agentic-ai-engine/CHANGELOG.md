@@ -2,6 +2,63 @@
 
 All notable changes to the agentic-ai-engine primitive will be documented here.
 
+## [1.13.0] - 2026-04-14
+### Added
+- **Console entry persistence**: tool calls and thinking blocks are now
+  persisted to a `console_entries` table, enabling historical console
+  replay when loading previous chat sessions. New `ConsoleEntry` schema,
+  `ConsoleEntryOut` response model, and full persistence pipeline in the
+  chat API.
+  (files: schema/console_entry.py, backend/api/chat.py)
+- **Universal `tool_call_start`/`tool_call_end` SSE events**: the runner
+  now emits structured tool-call events for *all* tools (not just
+  delegation tools), carrying `tool_name`, `args`, and `result`. This
+  gives the ConsolePanel live visibility into every tool invocation.
+  (files: backend/agents/runner.py)
+- **Delegation query tracking**: `agent_start` events now include the
+  `query` text the supervisor sent to the child agent. Stored as
+  `delegation_query` on `AgentActivity` and surfaced in the
+  `AgentActivityOut` API response and `ChildAgent` / `ActivityGroup`
+  frontend types.
+  (files: backend/agents/runner.py, backend/api/chat.py,
+  schema/models.py, frontend/components/chat-runtime.tsx)
+- **Child agent memory context**: delegated child agents now receive
+  session notes and recalled long-term memories, giving them awareness
+  of the ongoing conversation without their own checkpoint history.
+  Session notes are injected as `<session_context>` in the query;
+  recalled memories are passed via `recalled_context` to `build_agent`.
+  (files: backend/agents/supervisor.py)
+- **Enhanced delegation tool description**: the `ask_<agent>` tool
+  description now includes an `IMPORTANT` clause instructing the
+  supervisor to always pass full context (entities, identifiers, details)
+  since child agents cannot see prior messages.
+  (files: backend/agents/supervisor.py)
+
+### Changed
+- **Chat runtime session resilience**: `makeChatModelAdapter` now retries
+  up to 1 second (20 × 50ms) for `sessionIdRef` to be populated before
+  sending the first message, preventing race conditions on fast initial
+  sends. `RuntimeHook` uses a `prevRemoteIdRef` guard to only update
+  `sessionIdRef` on actual thread switches, preventing stale overwrites.
+  The `session` SSE event is now forwarded to `onAgentEvent` so the
+  runtime can update `currentSessionId` immediately.
+  (files: frontend/components/chat-runtime.tsx)
+- **Runner event type handling**: the `error` event type from the runner
+  is now forwarded through the SSE stream as an `error` event, allowing
+  RBAC denials and other pre-stream errors to reach the frontend.
+  (files: backend/api/chat.py)
+
+### Migration notes
+- New `console_entries` table required. See `schema/console_entry.py`
+  for the canonical definition. Run Alembic autogenerate.
+- New `delegation_query` column (Text, default `""`) on the
+  `agent_activities` table. Run Alembic autogenerate.
+- `ConsoleEntryRecord` interface must be present in the consumer's
+  `@/lib/types` module (same shape as introduced in v1.9.0).
+- `AgentActivityRecord` interface should include `delegation_query?: string`.
+- No breaking changes; existing sessions without console entries or
+  delegation queries render identically to before.
+
 ## [1.12.3] - 2026-04-06
 ### Fixed
 - **`backend/requirements.txt`**: aligned dependency minimums with

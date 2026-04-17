@@ -26,6 +26,7 @@ import { ExportedMessageRepository } from "@assistant-ui/react";
 import type { ThreadHistoryAdapter } from "@assistant-ui/core";
 import { api } from "@/lib/api-client";
 import type { AgentActivityRecord, ConsoleEntryRecord } from "@/lib/types";
+import { useUIContextStore } from "../stores/ui-context-store";
 
 /* ------------------------------------------------------------------ */
 /*  Child-agent activity context (consumed by AgentActivityPanel)      */
@@ -118,6 +119,124 @@ export type AgentEventCallback = (
   data: Record<string, any>,
 ) => void;
 
+export type ClientToolHandler = (
+  toolName: string,
+  args: Record<string, unknown>,
+) => Promise<string>;
+
+/* ------------------------------------------------------------------ */
+/*  Client tool execution helpers                                      */
+/* ------------------------------------------------------------------ */
+
+function defaultClientToolHandler(toolName: string, args: Record<string, unknown>): Promise<string> {
+  if (toolName === "get_screen_context") {
+    const snapshot = useUIContextStore.getState().getSnapshot();
+    return Promise.resolve(JSON.stringify(snapshot));
+  }
+  return Promise.resolve(JSON.stringify({ error: `Unknown client tool: ${toolName}` }));
+}
+
+async function processResumeStream(
+  sessionId: string,
+  callId: string,
+  toolName: string,
+  result: string,
+  agentSlug: string,
+  onEvent: (eventName: string, data: Record<string, any>) => void,
+  abortSignal: AbortSignal,
+): Promise<{ accumulated: string; thinkingAccumulated: string; interrupted?: { callId: string; toolName: string; args: Record<string, unknown>; sessionId: string; agentSlug: string } }> {
+  const res = await fetch(`${api.getApiBase()}/chat/tool-result`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(api.getAuthToken() ? { Authorization: `Bearer ${api.getAuthToken()}` } : {}),
+    },
+    body: JSON.stringify({
+      session_id: sessionId,
+      call_id: callId,
+      tool_name: toolName,
+      result,
+      agent_slug: agentSlug,
+    }),
+    signal: abortSignal,
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(body.detail || res.statusText);
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("No resume response stream");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let currentEvent = "";
+  let accumulated = "";
+  let thinkingAccumulated = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const line of lines) {
+      if (line.startsWith("event: ")) {
+        currentEvent = line.slice(7).trim();
+      } else if (line.startsWith("data: ")) {
+        try {
+          const data = JSON.parse(line.slice(6));
+
+          if (currentEvent === "thinking" && data.content !== undefined) {
+            thinkingAccumulated += data.content;
+            onEvent(currentEvent, data);
+          } else if (currentEvent === "token" && data.content !== undefined) {
+            accumulated += data.content;
+            onEvent(currentEvent, data);
+          } else if (currentEvent === "client_tool_request") {
+            return {
+              accumulated,
+              thinkingAccumulated,
+              interrupted: {
+                callId: data.call_id,
+                toolName: data.tool_name,
+                args: data.args ?? {},
+                sessionId: data.session_id,
+                agentSlug: data.agent_slug,
+              },
+            };
+          } else if (currentEvent === "error") {
+            throw new Error(data.detail ?? "Agent error");
+          } else if (
+            currentEvent === "agent_start" ||
+            currentEvent === "agent_token" ||
+            currentEvent === "agent_done" ||
+            currentEvent === "tool_call_start" ||
+            currentEvent === "tool_call_end" ||
+            currentEvent === "presentation_update" ||
+            currentEvent === "task_update"
+          ) {
+            onEvent(currentEvent, data);
+          }
+        } catch (e) {
+          if (e instanceof Error && e.message !== "Agent error") {
+            /* skip malformed JSON */
+          } else {
+            throw e;
+          }
+        }
+        currentEvent = "";
+      } else if (line.trim() === "") {
+        currentEvent = "";
+      }
+    }
+  }
+
+  return { accumulated, thinkingAccumulated };
+}
+
 /* ------------------------------------------------------------------ */
 /*  Chat model adapter (SSE -> assistant-ui)                           */
 /* ------------------------------------------------------------------ */
@@ -151,6 +270,7 @@ function makeChatModelAdapter(
   onAgentEvent: React.RefObject<AgentEventCallback | undefined>,
   onRunStart: React.RefObject<((userText: string) => void) | undefined>,
   messageTransformRef: React.RefObject<((text: string) => string) | undefined>,
+  clientToolHandlerRef: React.RefObject<ClientToolHandler | undefined>,
 ): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal }) {
@@ -235,6 +355,58 @@ function makeChatModelAdapter(
                   ? `<think>\n${thinkingAccumulated}\n</think>\n\n${accumulated}`
                   : accumulated;
                 yield { content: [{ type: "text" as const, text: display }] };
+              } else if (currentEvent === "client_tool_request") {
+                const handler = clientToolHandlerRef.current ?? defaultClientToolHandler;
+                const toolResult = await handler(data.tool_name, data.args ?? {});
+
+                let pending: { callId: string; toolName: string; args: Record<string, unknown>; sessionId: string; agentSlug: string } | undefined = {
+                  callId: data.call_id,
+                  toolName: data.tool_name,
+                  args: data.args ?? {},
+                  sessionId: data.session_id ?? sessionId ?? "",
+                  agentSlug: data.agent_slug ?? agentSlugRef.current,
+                };
+                let currentResult = toolResult;
+
+                while (pending) {
+                  const onEventCallback = (eventName: string, eventData: Record<string, any>) => {
+                    if (eventName === "thinking") {
+                      thinkingAccumulated += eventData.content ?? "";
+                    } else if (eventName === "token") {
+                      accumulated += eventData.content ?? "";
+                    }
+                    onAgentEvent.current?.(eventName, eventData);
+                  };
+
+                  const resumeResult = await processResumeStream(
+                    pending.sessionId,
+                    pending.callId,
+                    pending.toolName,
+                    currentResult,
+                    pending.agentSlug,
+                    onEventCallback,
+                    abortSignal,
+                  );
+
+                  accumulated += resumeResult.accumulated;
+                  thinkingAccumulated += resumeResult.thinkingAccumulated;
+
+                  const display = thinkingAccumulated
+                    ? `<think>\n${thinkingAccumulated}\n</think>\n\n${accumulated}`
+                    : accumulated;
+                  yield { content: [{ type: "text" as const, text: display }] };
+
+                  if (resumeResult.interrupted) {
+                    const nextHandler = clientToolHandlerRef.current ?? defaultClientToolHandler;
+                    currentResult = await nextHandler(
+                      resumeResult.interrupted.toolName,
+                      resumeResult.interrupted.args,
+                    );
+                    pending = resumeResult.interrupted;
+                  } else {
+                    pending = undefined;
+                  }
+                }
               } else if (
                 currentEvent === "agent_start" ||
                 currentEvent === "agent_token" ||
@@ -469,6 +641,7 @@ function RuntimeHook({
   onRunStartRef,
   onThreadSwitchRef,
   messageTransformRef,
+  clientToolHandlerRef,
   fixedSessionId,
 }: {
   agentSlugRef: React.RefObject<string>;
@@ -479,6 +652,7 @@ function RuntimeHook({
   onRunStartRef: React.RefObject<((userText: string) => void) | undefined>;
   onThreadSwitchRef: React.RefObject<(() => void) | undefined>;
   messageTransformRef: React.RefObject<((text: string) => string) | undefined>;
+  clientToolHandlerRef: React.RefObject<ClientToolHandler | undefined>;
   fixedSessionId?: string;
 }) {
   const remoteId = useAuiState(
@@ -498,8 +672,8 @@ function RuntimeHook({
 
   const history = useHistoryAdapter(effectiveRemoteId, sessionIdRef, onActivitiesLoadedRef, onConsoleLoadedRef);
   const adapter = useMemo(
-    () => makeChatModelAdapter(agentSlugRef, sessionIdRef, onAgentEventRef, onRunStartRef, messageTransformRef),
-    [agentSlugRef, sessionIdRef, onAgentEventRef, onRunStartRef, messageTransformRef],
+    () => makeChatModelAdapter(agentSlugRef, sessionIdRef, onAgentEventRef, onRunStartRef, messageTransformRef, clientToolHandlerRef),
+    [agentSlugRef, sessionIdRef, onAgentEventRef, onRunStartRef, messageTransformRef, clientToolHandlerRef],
   );
   const attachmentAdapter = useMemo(
     () =>
@@ -534,11 +708,13 @@ interface ChatRuntimeProps extends PropsWithChildren {
   agentSlug: string;
   onPresentationUpdate?: (presentationId: string) => void;
   messageTransform?: (text: string) => string;
+  /** Custom handler for client tools. Defaults to reading the UI context store. */
+  clientToolHandler?: ClientToolHandler;
   /** When set, the runtime binds to this single session instead of the global thread list. */
   fixedSessionId?: string;
 }
 
-export function ChatRuntime({ children, agentSlug, onPresentationUpdate, messageTransform, fixedSessionId }: ChatRuntimeProps) {
+export function ChatRuntime({ children, agentSlug, onPresentationUpdate, messageTransform, clientToolHandler, fixedSessionId }: ChatRuntimeProps) {
   const agentSlugRef = useRef(agentSlug);
   agentSlugRef.current = agentSlug;
 
@@ -730,6 +906,9 @@ export function ChatRuntime({ children, agentSlug, onPresentationUpdate, message
   const messageTransformRef = useRef<((text: string) => string) | undefined>(undefined);
   messageTransformRef.current = messageTransform;
 
+  const clientToolHandlerRef = useRef<ClientToolHandler | undefined>(undefined);
+  clientToolHandlerRef.current = clientToolHandler;
+
   const ctxValue = useMemo<ChildAgentContextValue>(
     () => ({
       liveAgents: liveAgentMap,
@@ -748,7 +927,7 @@ export function ChatRuntime({ children, agentSlug, onPresentationUpdate, message
 
   const threadListAdapter = useThreadListAdapter(sessionIdRef, onThreadSwitchRef, fixedSessionId);
   const runtime = unstable_useRemoteThreadListRuntime({
-    runtimeHook: () => RuntimeHook({ agentSlugRef, sessionIdRef, onAgentEventRef, onActivitiesLoadedRef, onConsoleLoadedRef, onRunStartRef, onThreadSwitchRef, messageTransformRef, fixedSessionId }),
+    runtimeHook: () => RuntimeHook({ agentSlugRef, sessionIdRef, onAgentEventRef, onActivitiesLoadedRef, onConsoleLoadedRef, onRunStartRef, onThreadSwitchRef, messageTransformRef, clientToolHandlerRef, fixedSessionId }),
     adapter: threadListAdapter,
   });
 

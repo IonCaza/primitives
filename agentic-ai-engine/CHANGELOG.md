@@ -2,6 +2,64 @@
 
 All notable changes to the agentic-ai-engine primitive will be documented here.
 
+## [1.14.0] - 2026-04-17
+### Added
+- **Client tool protocol**: new `make_client_tool()` helper and `CLIENT_TOOL_PREFIX`
+  constant that create LangGraph tools which pause execution via `interrupt()`
+  and wait for a frontend-supplied result. Enables any tool that must execute
+  in the browser (screen context, navigation, DOM inspection, etc.).
+  (files: backend/agents/runner.py)
+- **Resume endpoint**: `POST /chat/tool-result` accepts a client tool result
+  and resumes the interrupted graph with `Command(resume=...)`, returning a
+  new SSE stream that continues from where the graph paused.
+  (files: backend/api/chat.py)
+- **Interrupt detection in runner**: after `_consume_stream` completes, the
+  runner inspects the graph state for pending interrupts and yields a
+  `client_tool_request` event. The chat API forwards this as an SSE event
+  and closes the stream (close-and-resume pattern).
+  (files: backend/agents/runner.py, backend/api/chat.py)
+- **`resume_agent_stream()`**: new function that rebuilds the agent graph
+  and invokes it with `Command(resume=...)` for the same thread, yielding
+  the same structured event dicts as `run_agent_stream`.
+  (files: backend/agents/runner.py)
+- **Screen context tools**: `build_screen_context_tools()` provides
+  `get_screen_context` (reads current UI state) and `navigate_user`
+  (navigates the user to a page), both as client tools.
+  (files: backend/agents/tools/screen_context.py)
+- **Zustand UI context store**: `useUIContextStore` Zustand store where
+  page components register their visible data. Includes `getSnapshot()`
+  for serializing the current UI state on demand.
+  (files: frontend/stores/ui-context-store.ts)
+- **`useRegisterUIContext` hook**: page components call this to register
+  data into the UI context store; automatically unregisters on unmount.
+  (files: frontend/hooks/use-register-ui-context.ts)
+- **`useRouteSync` hook**: mounted in the dashboard layout to keep the
+  Zustand store's pathname and params in sync with Next.js navigation.
+  (files: frontend/hooks/use-route-sync.ts)
+- **Client tool round-trip in chat runtime**: `makeChatModelAdapter` now
+  handles `client_tool_request` SSE events by reading the Zustand store,
+  POSTing the result to `/chat/tool-result`, and processing the resume
+  stream -- all transparently within the same assistant-ui generator.
+  Supports chained client tool calls.
+  (files: frontend/components/chat-runtime.tsx)
+- **`clientToolHandler` prop on `ChatRuntime`**: consumers can provide a
+  custom handler for client tools (e.g., for `navigate_user`). Falls back
+  to `defaultClientToolHandler` which reads the UI context store.
+  (files: frontend/components/chat-runtime.tsx)
+- **`zustand` dependency**: added to `package-deps.json`.
+  (files: frontend/package-deps.json)
+### Migration notes
+- Add `zustand` (^5) to your frontend dependencies.
+- Wire `useRouteSync()` into your dashboard layout component.
+- Add `useRegisterUIContext(key, data)` to page components whose data
+  should be visible to the agent.
+- To enable screen context and navigation tools, import
+  `build_screen_context_tools` and include its output in `extra_tools`
+  when building your agent/coordinator.
+- Add your application's available routes to the coordinator system prompt
+  so the agent knows where it can navigate.
+- No new database tables or migrations required.
+
 ## [1.13.0] - 2026-04-14
 ### Added
 - **Console entry persistence**: tool calls and thinking blocks are now

@@ -7,7 +7,8 @@
     "react-markdown": "^10",
     "remark-gfm": "^4",
     "react-resizable-panels": "^2",
-    "lucide-react": "^0.400"
+    "lucide-react": "^0.400",
+    "zustand": "^5"
   },
   "notes": [
     "shadcn/ui components (Button, Select, etc.) must already be installed",

@@ -6,6 +6,8 @@ import uuid
 from typing import Any, AsyncIterator
 
 from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.types import interrupt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,6 +34,30 @@ from app.db.models.llm_provider import LlmProvider
 logger = logging.getLogger(__name__)
 
 DELEGATION_PREFIX = "ask_"
+CLIENT_TOOL_PREFIX = "client__"
+
+
+def make_client_tool(name: str, description: str, schema: dict | None = None) -> BaseTool:
+    """Create a tool that pauses the graph via LangGraph interrupt() and waits
+    for the frontend to supply a result through the resume endpoint.
+
+    The tool is registered with a ``client__`` prefix so the runner and chat API
+    can detect the interrupt and forward the request to the browser.
+    """
+
+    async def _execute(**kwargs: Any) -> str:
+        result = interrupt({
+            "type": "client_tool_request",
+            "tool_name": name,
+            "args": kwargs,
+        })
+        return result if isinstance(result, str) else str(result)
+
+    return StructuredTool.from_function(
+        coroutine=_execute,
+        name=f"{CLIENT_TOOL_PREFIX}{name}",
+        description=description,
+    )
 
 
 async def run_agent_stream(
@@ -55,6 +81,13 @@ async def run_agent_stream(
         {"type": "tool_call_end", "run_id": str, "tool_name": str, "result": str}
         {"type": "task_update", "session_id": str}
         {"type": "presentation_update", "presentation_id": str}
+        {"type": "client_tool_request", "call_id": str, "tool_name": str, "args": dict}
+        {"type": "error", "content": str}
+
+    Client tool requests use LangGraph ``interrupt()`` to pause the graph.
+    The caller (chat API) detects the interrupt via ``aget_state()`` after
+    the stream completes, emits the SSE event, and resumes the graph in a
+    separate invocation with ``Command(resume=...)``.
 
     The checkpointer handles message history natively via thread_id.
     Only the new user message is passed in; all prior context is loaded
@@ -360,6 +393,27 @@ async def run_agent_stream(
         else:
             logger.exception("Unhandled error during agent streaming")
 
+    # Detect LangGraph interrupt (client tool request)
+    try:
+        post_state = await agent.aget_state(run_config)
+        if post_state and post_state.tasks:
+            for task in post_state.tasks:
+                interrupts = getattr(task, "interrupts", None)
+                if interrupts:
+                    for intr in interrupts:
+                        payload = getattr(intr, "value", None) or {}
+                        if isinstance(payload, dict) and payload.get("type") == "client_tool_request":
+                            yield {
+                                "type": "client_tool_request",
+                                "call_id": str(intr.ns) if hasattr(intr, "ns") else str(uuid.uuid4()),
+                                "tool_name": payload.get("tool_name", ""),
+                                "args": payload.get("args", {}),
+                                "thread_id": thread_id,
+                            }
+                            return
+    except Exception:
+        logger.debug("Interrupt detection skipped", exc_info=True)
+
     if not collected:
         try:
             snapshot = await agent.aget_state(run_config)
@@ -406,3 +460,234 @@ async def run_agent_stream(
         ]
         asyncio.create_task(extract_memories(user_id, turn_msgs))
         asyncio.create_task(maybe_consolidate(user_id, llm))
+
+
+async def resume_agent_stream(
+    db: AsyncSession,
+    thread_id: str,
+    resume_value: str,
+    *,
+    agent_slug: str = "contribution-analyst",
+    session_id: uuid.UUID | None = None,
+    user_id: uuid.UUID | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Resume a graph that was interrupted by a client tool request.
+
+    Re-builds the same agent graph (same tools, same config) then invokes
+    it with ``Command(resume=resume_value)`` via the same ``thread_id``.
+    Yields the same structured event dicts as ``run_agent_stream``.
+    """
+    from langgraph.types import Command
+
+    if not await is_ai_enabled(db):
+        raise RuntimeError("AI is not enabled")
+
+    agent_config = await get_agent_by_slug(db, agent_slug)
+    if not agent_config:
+        raise RuntimeError(f"Agent '{agent_slug}' not found or not enabled")
+
+    provider: LlmProvider | None = agent_config.llm_provider
+    if not provider:
+        result = await db.execute(
+            select(LlmProvider)
+            .where(LlmProvider.is_default.is_(True))
+            .where(LlmProvider.model_type == "chat")
+            .limit(1)
+        )
+        provider = result.scalar_one_or_none()
+    if not provider:
+        result = await db.execute(
+            select(LlmProvider).where(LlmProvider.model_type == "chat").limit(1)
+        )
+        provider = result.scalar_one_or_none()
+    if not provider:
+        raise RuntimeError("No LLM provider available — configure one in Settings > AI")
+
+    mem_settings = await get_memory_settings()
+
+    extra_tools: list[BaseTool] = []
+    if session_id is not None:
+        extra_tools.append(build_search_chat_history_tool(session_id))
+        extra_tools.append(build_report_capability_gap_tool(session_id, agent_slug))
+        extra_tools.extend(build_task_tools(db, session_id))
+    if user_id is not None and mem_settings.memory_enabled:
+        extra_tools.extend(build_memory_tools(user_id))
+
+    is_supervisor = getattr(agent_config, "agent_type", "standard") == "supervisor"
+    if is_supervisor:
+        member_agents = getattr(agent_config, "member_agents", [])
+        if member_agents:
+            delegation_tools = build_delegation_tools(member_agents, provider)
+            extra_tools.extend(delegation_tools)
+            extra_tools.extend(build_prompt_management_tools(member_agents))
+
+    current_user_id.set(user_id)
+    current_session_id.set(session_id)
+
+    if user_id is not None:
+        try:
+            resolver = get_entitlement_resolver()
+            entitlements = await resolver.resolve(db, user_id)
+            current_entitlements.set(entitlements)
+        except Exception:
+            pass
+
+    recalled_context = ""
+    skill_context = ""
+
+    if is_supervisor:
+        agent, max_iterations = build_coordinator(
+            agent_config, provider, db, extra_tools=extra_tools,
+            recalled_context=recalled_context,
+            skill_context=skill_context,
+        )
+    else:
+        agent, max_iterations = build_agent(
+            agent_config, provider, db, extra_tools=extra_tools,
+            recalled_context=recalled_context,
+            skill_context=skill_context,
+        )
+
+    run_config = {
+        "configurable": {"thread_id": thread_id},
+        "recursion_limit": (max_iterations or (50 if is_supervisor else 25)) * 2,
+    }
+
+    active_delegations: dict[str, dict[str, str]] = {}
+    _PRES_TOOLS = {"save_presentation", "update_presentation"}
+    _TASK_TOOLS = {"create_task", "update_task"}
+    pending_pres_ids: dict[str, str] = {}
+    collected = ""
+    pending_separator = False
+
+    async def _consume_resume():
+        nonlocal collected, pending_separator
+        async for event in agent.astream_events(
+            Command(resume=resume_value),
+            version="v2",
+            config=run_config,
+        ):
+            kind = event["event"]
+            name = event.get("name", "")
+            run_id = event.get("run_id", "")
+            parent_ids: list[str] = event.get("parent_ids", [])
+
+            if kind == "on_tool_start" and name.startswith(DELEGATION_PREFIX):
+                slug = name[len(DELEGATION_PREFIX):].replace("_", "-")
+                tool_input = event.get("data", {}).get("input", {})
+                query_text = ""
+                if isinstance(tool_input, dict):
+                    query_text = tool_input.get("query", "")
+                elif isinstance(tool_input, str):
+                    query_text = tool_input
+                active_delegations[run_id] = {"slug": slug, "query": query_text}
+                yield {"type": "agent_start", "run_id": run_id, "slug": slug, "query": query_text}
+
+            elif kind == "on_tool_start" and name in _PRES_TOOLS:
+                tool_input = event.get("data", {}).get("input", {})
+                pid = tool_input.get("presentation_id", "") if isinstance(tool_input, dict) else ""
+                if pid:
+                    pending_pres_ids[run_id] = pid
+                yield {"type": "tool_call_start", "run_id": run_id, "tool_name": name, "args": (tool_input if isinstance(tool_input, dict) else {})}
+
+            elif kind == "on_tool_start":
+                tool_input = event.get("data", {}).get("input", {})
+                yield {"type": "tool_call_start", "run_id": run_id, "tool_name": name, "args": (tool_input if isinstance(tool_input, dict) else {})}
+
+            elif kind == "on_tool_end" and name.startswith(DELEGATION_PREFIX):
+                info = active_delegations.pop(run_id, None)
+                if info:
+                    yield {"type": "agent_done", "run_id": run_id}
+                if collected:
+                    pending_separator = True
+
+            elif kind == "on_tool_end" and name in _PRES_TOOLS:
+                tool_output = str(event.get("data", {}).get("output", ""))
+                pres_id = None
+                if "ID:" in tool_output:
+                    pres_id = tool_output.split("ID:")[1].strip().split()[0]
+                if not pres_id:
+                    pres_id = pending_pres_ids.pop(run_id, None)
+                if pres_id and not tool_output.startswith("Error:"):
+                    yield {"type": "presentation_update", "presentation_id": pres_id}
+                yield {"type": "tool_call_end", "run_id": run_id, "tool_name": name, "result": tool_output[:2000]}
+                if collected:
+                    pending_separator = True
+
+            elif kind == "on_tool_end" and name in _TASK_TOOLS:
+                tool_output = str(event.get("data", {}).get("output", ""))
+                yield {"type": "task_update", "session_id": str(session_id)}
+                yield {"type": "tool_call_end", "run_id": run_id, "tool_name": name, "result": tool_output[:2000]}
+                if collected:
+                    pending_separator = True
+
+            elif kind == "on_tool_end":
+                tool_output = str(event.get("data", {}).get("output", ""))
+                yield {"type": "tool_call_end", "run_id": run_id, "tool_name": name, "result": tool_output[:2000]}
+                if collected:
+                    pending_separator = True
+
+            elif kind == "on_chat_model_stream":
+                chunk = event["data"]["chunk"]
+                content = getattr(chunk, "content", "")
+                thinking_text = ""
+                text_content = ""
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "thinking":
+                                thinking_text += block.get("thinking", "")
+                            else:
+                                text_content += block.get("text", "")
+                        elif isinstance(block, str):
+                            text_content += block
+                elif isinstance(content, str):
+                    text_content = content
+                if not thinking_text and not text_content:
+                    continue
+                child_run = next(
+                    (pid for pid in parent_ids if pid in active_delegations),
+                    None,
+                )
+                if thinking_text:
+                    if child_run:
+                        yield {"type": "agent_token", "run_id": child_run, "content": thinking_text}
+                    else:
+                        yield {"type": "thinking", "content": thinking_text}
+                if text_content:
+                    if child_run:
+                        yield {"type": "agent_token", "run_id": child_run, "content": text_content}
+                    else:
+                        if pending_separator:
+                            collected += "\n\n"
+                            yield {"type": "token", "content": "\n\n"}
+                            pending_separator = False
+                        collected += text_content
+                        yield {"type": "token", "content": text_content}
+
+    try:
+        async for ev in _consume_resume():
+            yield ev
+    except Exception:
+        logger.exception("Error during agent resume streaming")
+
+    # Check for another interrupt (chained client tools)
+    try:
+        post_state = await agent.aget_state(run_config)
+        if post_state and post_state.tasks:
+            for task in post_state.tasks:
+                interrupts = getattr(task, "interrupts", None)
+                if interrupts:
+                    for intr in interrupts:
+                        payload = getattr(intr, "value", None) or {}
+                        if isinstance(payload, dict) and payload.get("type") == "client_tool_request":
+                            yield {
+                                "type": "client_tool_request",
+                                "call_id": str(intr.ns) if hasattr(intr, "ns") else str(uuid.uuid4()),
+                                "tool_name": payload.get("tool_name", ""),
+                                "args": payload.get("args", {}),
+                                "thread_id": thread_id,
+                            }
+                            return
+    except Exception:
+        logger.debug("Interrupt detection skipped on resume", exc_info=True)

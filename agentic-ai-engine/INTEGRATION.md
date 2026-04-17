@@ -316,7 +316,7 @@ Install from `frontend/package-deps.json`:
 
 ```bash
 pnpm add @assistant-ui/react @assistant-ui/core assistant-stream \
-  react-markdown remark-gfm react-resizable-panels lucide-react
+  react-markdown remark-gfm react-resizable-panels lucide-react zustand
 ```
 
 ### 3.2 Component Placement
@@ -328,6 +328,11 @@ Copy `frontend/components/` into your `src/components/` directory:
 - `task-board-panel.tsx` -- Live task decomposition board
 - `console-panel.tsx` -- Tool call and thinking visualization panel
 - `assistant-ui/` -- The assistant-ui component overrides (thread, markdown, etc.)
+
+Also copy `frontend/stores/` and `frontend/hooks/`:
+- `stores/ui-context-store.ts` -- Zustand store for UI context registration
+- `hooks/use-register-ui-context.ts` -- Hook for pages to register their visible data
+- `hooks/use-route-sync.ts` -- Hook to keep Zustand route in sync with Next.js
 
 **Adaptation notes:**
 - `@/lib/api-client` import -- update to your API client's path
@@ -922,7 +927,74 @@ Configure policies by inserting `AccessPolicy` rows with
 - **Single-tenant deploys:** Skip resolver registration; the default
   grants full access.
 
-## 14. Verification
+## 14. UI Context Integration (Track 12)
+
+This track adds client-side round-trip tools that let the agent inspect
+what the user sees and navigate them to specific pages.
+
+### 14.1 Backend: Screen Context Tools
+
+Import and include the screen context tools in your agent builder:
+
+```python
+from app.agents.tools.screen_context import build_screen_context_tools
+
+# In your runner or coordinator builder, add to extra_tools:
+extra_tools.extend(build_screen_context_tools())
+```
+
+The tools use `make_client_tool()` from `runner.py`, which calls LangGraph
+`interrupt()` to pause the graph. The runner detects the interrupt after
+streaming completes and yields a `client_tool_request` event.
+
+### 14.2 Backend: Resume Endpoint
+
+The `POST /chat/tool-result` endpoint is already provided by `chat.py`.
+Wire it in your FastAPI router alongside the existing chat routes.
+
+### 14.3 Frontend: Zustand Store and Hooks
+
+1. Copy `stores/ui-context-store.ts` to your frontend `src/stores/` directory.
+2. Copy `hooks/use-register-ui-context.ts` and `hooks/use-route-sync.ts` to
+   your frontend `src/hooks/` directory.
+3. Call `useRouteSync()` in your dashboard layout component.
+4. In each page component, call `useRegisterUIContext(key, data)` with the
+   data the page fetches.
+
+### 14.4 Frontend: Chat Runtime
+
+The `ChatRuntime` component now accepts an optional `clientToolHandler` prop.
+For navigation support, pass a handler that calls `router.push()`:
+
+```typescript
+import { useRouter } from "next/navigation";
+import { useUIContextStore } from "@/stores/ui-context-store";
+
+const router = useRouter();
+
+const clientToolHandler = async (toolName: string, args: Record<string, unknown>) => {
+  if (toolName === "navigate_user") {
+    router.push(args.path as string);
+    // Wait for route change to propagate to Zustand
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return JSON.stringify(useUIContextStore.getState().getSnapshot());
+};
+```
+
+### 14.5 Coordinator Prompt
+
+Add a "Screen Context & Navigation" section to your coordinator system prompt
+listing the available `get_screen_context` and `navigate_user` tools and the
+pages the agent can navigate to. See the CHANGELOG for details.
+
+**Adaptation notes:**
+- The route map is app-specific. List only your application's pages.
+- The `clientToolHandler` callback is optional; if omitted, the default
+  handler reads the Zustand store for `get_screen_context` but cannot
+  handle `navigate_user` (it will return an error for unknown tools).
+
+## 15. Verification
 
 - [ ] Database migrations run successfully (including `agent_memories`, `agent_skills`, `session_notes`, `last_memory_consolidation`, `access_policies`, `resource_grants`)
 - [ ] Application starts without errors (memory pool initializes, skills seeded)

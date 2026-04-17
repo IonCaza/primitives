@@ -1,5 +1,5 @@
 name: agentic-ai-engine
-version: "1.13.0"
+version: "1.14.0"
 description: >
   Full-stack multi-agent AI engine with LangGraph supervisor pattern,
   DB-driven agent configuration, 3-tier memory (checkpoint + summarization +
@@ -34,19 +34,22 @@ provides:
     - ResourceGrant
     - ConsoleEntry
   api_routes:
-    - { path: "/api/v1/chat", methods: [POST, GET, PATCH, DELETE], description: "SSE streaming chat + session CRUD" }
+    - { path: "/api/v1/chat", methods: [POST, GET, PATCH, DELETE], description: "SSE streaming chat + session CRUD + client tool resume" }
     - { path: "/api/v1/agents", methods: [GET, POST, PUT, DELETE], description: "Agent configuration CRUD" }
     - { path: "/api/v1/ai-settings", methods: [GET, PUT], description: "Global AI settings" }
     - { path: "/api/v1/llm-providers", methods: [GET, POST, PUT, DELETE], description: "LLM provider management" }
     - { path: "/api/v1/ai-tools", methods: [GET], description: "List registered tools" }
     - { path: "/api/v1/knowledge-graphs", methods: [GET, POST, PUT, DELETE], description: "Knowledge graph CRUD" }
   frontend_components:
-    - ChatRuntime (SSE adapter bridging assistant-ui to the backend)
+    - ChatRuntime (SSE adapter bridging assistant-ui to the backend, with client tool round-trip support)
     - ChatPanel (resizable panel with thread list + agent activity + task board + console)
     - AgentActivityPanel (live + historical delegation tracking)
     - TaskBoardPanel (live task board with progress tracking)
     - ConsolePanel (live + historical tool call and thinking visualization)
     - Thread, MarkdownText, ToolFallback, ThreadList (assistant-ui components)
+    - UIContextStore (Zustand store for page-level context registration)
+    - useRegisterUIContext (hook for pages to register their visible data)
+    - useRouteSync (hook to keep Zustand store route in sync with Next.js navigation)
 
 extension_points:
   - name: "Custom tool categories"

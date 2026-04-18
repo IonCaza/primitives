@@ -36,7 +36,7 @@ class AttachmentContent(BaseModel):
 class ChatRequest(BaseModel):
     session_id: uuid.UUID | None = None
     message: str
-    agent_slug: str = "contribution-analyst"
+    agent_slug: str = "supervisor"
     attachments: list[AttachmentContent] | None = None
 
 
@@ -344,11 +344,11 @@ async def send_message(
 
 
 class ClientToolResult(BaseModel):
+    thread_id: str
     session_id: uuid.UUID
+    agent_slug: str = "supervisor"
     call_id: str
-    tool_name: str
     result: str
-    agent_slug: str = "contribution-analyst"
 
 
 @router.post("/tool-result")
@@ -357,32 +357,23 @@ async def submit_tool_result(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Resume a graph interrupted by a client tool request.
+    """Accept a client-side tool result and resume the interrupted agent graph.
 
-    The frontend calls this after executing the tool locally, providing
-    the result.  A new SSE stream is returned that continues from the
-    interrupted checkpoint.
+    The frontend calls this after executing the tool locally, providing the
+    result. A new SSE stream is returned that continues from the interrupted
+    checkpoint.
     """
-    result = await db.execute(
-        select(ChatSession).where(
-            ChatSession.id == body.session_id,
-            ChatSession.user_id == user.id,
-        )
-    )
-    session = result.scalar_one_or_none()
-    if not session:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Session not found")
 
-    thread_id = str(body.session_id)
-
-    async def resume_generator():
+    async def event_generator():
         collected = ""
         activities: dict[str, dict] = {}
         console_log: list[dict] = []
         thinking_acc = ""
         try:
             async for evt in resume_agent_stream(
-                db, thread_id, body.result,
+                db,
+                body.thread_id,
+                body.result,
                 agent_slug=body.agent_slug,
                 session_id=body.session_id,
                 user_id=user.id,
@@ -434,54 +425,53 @@ async def submit_tool_result(
                     yield {"event": "presentation_update", "data": json.dumps({"presentation_id": evt["presentation_id"]})}
                 elif etype == "task_update":
                     yield {"event": "task_update", "data": json.dumps({"session_id": evt["session_id"]})}
+                elif etype == "client_tool_request":
+                    yield {"event": "client_tool_request", "data": json.dumps({
+                        "call_id": evt.get("call_id", ""),
+                        "tool_name": evt.get("tool_name", ""),
+                        "args": evt.get("args", {}),
+                        "thread_id": evt.get("thread_id", ""),
+                        "session_id": str(body.session_id),
+                        "agent_slug": body.agent_slug,
+                    })}
+                    return
                 elif etype == "error":
                     collected = evt.get("content", "An error occurred.")
                     yield {"event": "error", "data": json.dumps({"detail": collected})}
-                elif etype == "client_tool_request":
-                    yield {
-                        "event": "client_tool_request",
-                        "data": json.dumps({
-                            "call_id": evt.get("call_id", ""),
-                            "tool_name": evt.get("tool_name", ""),
-                            "args": evt.get("args", {}),
-                            "thread_id": evt.get("thread_id", ""),
-                            "session_id": str(body.session_id),
-                            "agent_slug": body.agent_slug,
-                        }),
-                    }
-                    return
 
-            yield {"event": "done", "data": json.dumps({"content": collected})}
+            if thinking_acc:
+                console_log.append({
+                    "entry_type": "thinking",
+                    "thinking_content": thinking_acc,
+                    "started_at": datetime.now(timezone.utc),
+                    "finished_at": datetime.now(timezone.utc),
+                })
+
+            yield {"event": "done", "data": json.dumps({"resumed": True})}
         except Exception:
-            logger.exception("Agent resume streaming error")
+            logger.exception("Error during tool-result resume")
             if not collected:
                 collected = "Sorry, I encountered an error processing your request."
-                yield {"event": "error", "data": json.dumps({"detail": collected})}
+            yield {"event": "error", "data": json.dumps({"detail": "Resume failed"})}
         finally:
-            content = collected or "No response generated."
-            activity_list = list(activities.values()) if activities else None
-            console_list = [ce for ce in console_log if "run_id" not in ce or ce.get("entry_type")] or None
-            try:
-                last_msg = (await db.execute(
-                    select(ChatMessage)
-                    .where(ChatMessage.session_id == body.session_id)
-                    .order_by(ChatMessage.created_at.desc())
-                    .limit(1)
-                )).scalar_one_or_none()
-                trigger_id = last_msg.id if last_msg and last_msg.role == MessageRole.USER else None
-                if content != "No response generated.":
+            if collected:
+                content = collected
+                activity_list = list(activities.values()) if activities else None
+                console_list = [ce for ce in console_log if "run_id" not in ce or ce.get("entry_type")] or None
+                try:
                     await asyncio.shield(
                         _persist_response(
                             db, body.session_id, content,
-                            trigger_message_id=trigger_id,
                             agent_activities=activity_list,
                             console_entries=console_list,
                         )
                     )
-            except Exception:
-                logger.exception("Failed to persist resume response")
+                except asyncio.CancelledError:
+                    logger.debug("SSE cancelled during resume persist — shielded task still running")
+                except Exception:
+                    logger.exception("Failed to persist resume response")
 
-    return EventSourceResponse(resume_generator())
+    return EventSourceResponse(event_generator())
 
 
 class RenameRequest(BaseModel):

@@ -2,6 +2,79 @@
 
 All notable changes to the agentic-ai-engine primitive will be documented here.
 
+## [1.15.0] - 2026-04-14
+### Added
+- **Dynamic route discovery via `get_app_routes` tool**: server-side LangChain
+  tool that returns a JSON map of application routes (path, description,
+  required params). Lets the agent discover where it can navigate without
+  routes being baked into the system prompt. `APP_ROUTES` is an extension
+  point -- consumer apps populate it with their route catalog.
+  (files: backend/agents/tools/screen_context.py)
+- **Pydantic `args_schema` on client tools**: `make_client_tool()` now
+  accepts an `args_schema: type | None` kwarg that is forwarded to
+  `StructuredTool.from_function`, giving the LLM formal typed argument
+  definitions. `navigate_user` now uses a `NavigateUserArgs(path: str)`
+  schema so the model stops guessing argument names.
+  (files: backend/agents/runner.py, backend/agents/tools/screen_context.py)
+- **Synthetic `tool_call_start`/`tool_call_end` events for client tools**:
+  the frontend chat runtime now emits synthetic console events around every
+  client tool execution so they appear in the ConsolePanel just like
+  server-side tools.
+  (files: frontend/components/chat-runtime.tsx)
+- **Navigation polling in `defaultClientToolHandler`**: after a
+  `navigate_user` call, the handler polls the Zustand store (300ms, up to
+  3s) for the new pathname before taking the post-navigation snapshot,
+  eliminating race conditions between `router.push()` and
+  `useRegisterUIContext`.
+  (files: frontend/components/chat-runtime.tsx)
+- **Default Supervisor tool set**: the builtin Supervisor now comes wired
+  with task management, skills, memory, and screen context / navigation
+  tools out of the box. Consumers can override via `tool_slugs` on their
+  own builtin spec.
+  (files: backend/agents/builtin/supervisor.py)
+- **Coordinator prompt "Screen Context & Navigation" section**: mandatory
+  3-step workflow (`get_app_routes` -> `navigate_user` -> wait ->
+  `get_screen_context`) documented in the coordinator system prompt,
+  including warnings about route parameters and the navigation/context
+  race.
+  (files: backend/agents/prompts/coordinator.py)
+
+### Changed
+- **Default `agent_slug` switched from `"contribution-analyst"` to
+  `"supervisor"`**: in `run_agent_stream`, `resume_agent_stream`,
+  `ChatRequest`, and `ClientToolResult`. The old default was leaking a
+  contributr-specific slug into the primitive.
+  (files: backend/agents/runner.py, backend/api/chat.py)
+- **Suppress duplicate client-tool console events**: the runner no longer
+  emits `tool_call_start`/`tool_call_end` for tools whose names start with
+  `CLIENT_TOOL_PREFIX`. The frontend is authoritative for client-tool
+  console entries; removing this prevents the spinning "phantom" entry
+  that never completed.
+  (files: backend/agents/runner.py)
+- **`ClientToolResult` now carries `thread_id` separately from
+  `session_id`**: frontend passes the exact LangGraph thread the interrupt
+  was recorded against (which may differ from the DB session UUID during
+  chained client-tool hops), making checkpoint resolution reliable.
+  (files: backend/api/chat.py, frontend/components/chat-runtime.tsx)
+- **Removed double-accumulation in chat runtime resume loop**: the
+  `while (pending)` resume loop was adding the final resume's
+  `accumulated` / `thinkingAccumulated` a second time, which produced
+  duplicated chat responses after navigation-heavy tool chains.
+  (files: frontend/components/chat-runtime.tsx)
+
+### Migration notes
+- **APP_ROUTES**: consumer apps must populate the `APP_ROUTES` dict in
+  `backend/agents/tools/screen_context.py` (or override the import with a
+  domain-specific module). The primitive ships with a placeholder empty
+  dict plus 2-3 example entries.
+- **Default Supervisor tool_slugs**: if your app had its own `supervisor.py`
+  builtin with an empty `tool_slugs=[]`, re-seed it (or merge the new
+  defaults) to pick up task/skill/memory/screen-context tools.
+- **`ClientToolResult` shape changed**: any non-standard client that calls
+  `POST /chat/tool-result` must send `thread_id` (str) in addition to
+  `session_id` (uuid). The default chat runtime does this automatically.
+- No new database tables or migrations required.
+
 ## [1.14.0] - 2026-04-17
 ### Added
 - **Client tool protocol**: new `make_client_tool()` helper and `CLIENT_TOOL_PREFIX`

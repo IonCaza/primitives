@@ -25,6 +25,7 @@ import {
 import { ExportedMessageRepository } from "@assistant-ui/react";
 import type { ThreadHistoryAdapter } from "@assistant-ui/core";
 import { api } from "@/lib/api-client";
+import { useRouter } from "next/navigation";
 import type { AgentActivityRecord, ConsoleEntryRecord } from "@/lib/types";
 import { useUIContextStore } from "../stores/ui-context-store";
 
@@ -128,23 +129,56 @@ export type ClientToolHandler = (
 /*  Client tool execution helpers                                      */
 /* ------------------------------------------------------------------ */
 
-function defaultClientToolHandler(toolName: string, args: Record<string, unknown>): Promise<string> {
+async function defaultClientToolHandler(
+  toolName: string,
+  args: Record<string, unknown>,
+  navigate?: (path: string) => void,
+): Promise<string> {
   if (toolName === "get_screen_context") {
     const snapshot = useUIContextStore.getState().getSnapshot();
-    return Promise.resolve(JSON.stringify(snapshot));
+    return JSON.stringify(snapshot);
   }
-  return Promise.resolve(JSON.stringify({ error: `Unknown client tool: ${toolName}` }));
+  if (toolName === "navigate_user") {
+    const path = (args.path ?? args.url ?? args.route ?? "") as string;
+    if (path && navigate) {
+      navigate(path);
+      // Allow React render cycle to process the navigation and the new
+      // page's useRegisterUIContext hooks to fire. We poll for a pathname
+      // change (up to 3 s) instead of using a fixed delay, so fast
+      // navigations resolve quickly and slow ones still work.
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 300));
+        const current = useUIContextStore.getState().pathname;
+        if (current === path) break;
+      }
+    }
+    const snapshot = useUIContextStore.getState().getSnapshot();
+    return JSON.stringify({ navigated_to: path, ...snapshot });
+  }
+  return JSON.stringify({ error: `Unknown client tool: ${toolName}` });
 }
 
 async function processResumeStream(
+  threadId: string,
   sessionId: string,
   callId: string,
-  toolName: string,
   result: string,
   agentSlug: string,
   onEvent: (eventName: string, data: Record<string, any>) => void,
   abortSignal: AbortSignal,
-): Promise<{ accumulated: string; thinkingAccumulated: string; interrupted?: { callId: string; toolName: string; args: Record<string, unknown>; sessionId: string; agentSlug: string } }> {
+): Promise<{
+  accumulated: string;
+  thinkingAccumulated: string;
+  interrupted?: {
+    callId: string;
+    toolName: string;
+    args: Record<string, unknown>;
+    threadId: string;
+    sessionId: string;
+    agentSlug: string;
+  };
+}> {
   const res = await fetch(`${api.getApiBase()}/chat/tool-result`, {
     method: "POST",
     headers: {
@@ -152,9 +186,9 @@ async function processResumeStream(
       ...(api.getAuthToken() ? { Authorization: `Bearer ${api.getAuthToken()}` } : {}),
     },
     body: JSON.stringify({
+      thread_id: threadId,
       session_id: sessionId,
       call_id: callId,
-      tool_name: toolName,
       result,
       agent_slug: agentSlug,
     }),
@@ -203,8 +237,9 @@ async function processResumeStream(
                 callId: data.call_id,
                 toolName: data.tool_name,
                 args: data.args ?? {},
+                threadId: data.thread_id,
                 sessionId: data.session_id,
-                agentSlug: data.agent_slug,
+                agentSlug: data.agent_slug ?? agentSlug,
               },
             };
           } else if (currentEvent === "error") {
@@ -271,6 +306,7 @@ function makeChatModelAdapter(
   onRunStart: React.RefObject<((userText: string) => void) | undefined>,
   messageTransformRef: React.RefObject<((text: string) => string) | undefined>,
   clientToolHandlerRef: React.RefObject<ClientToolHandler | undefined>,
+  navigateRef: React.RefObject<((path: string) => void) | undefined>,
 ): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal }) {
@@ -356,20 +392,50 @@ function makeChatModelAdapter(
                   : accumulated;
                 yield { content: [{ type: "text" as const, text: display }] };
               } else if (currentEvent === "client_tool_request") {
-                const handler = clientToolHandlerRef.current ?? defaultClientToolHandler;
+                // Emit a synthetic tool_call_start so the console shows the
+                // client tool invocation (the backend suppresses these events
+                // for client__-prefixed tools).
+                onAgentEvent.current?.("tool_call_start", {
+                  run_id: data.call_id,
+                  tool_name: data.tool_name,
+                  args: data.args ?? {},
+                });
+
+                const handler =
+                  clientToolHandlerRef.current ??
+                  ((tn: string, a: Record<string, unknown>) =>
+                    defaultClientToolHandler(tn, a, navigateRef.current ?? undefined));
                 const toolResult = await handler(data.tool_name, data.args ?? {});
 
-                let pending: { callId: string; toolName: string; args: Record<string, unknown>; sessionId: string; agentSlug: string } | undefined = {
+                onAgentEvent.current?.("tool_call_end", {
+                  run_id: data.call_id,
+                  tool_name: data.tool_name,
+                  result: toolResult,
+                });
+
+                let pending:
+                  | {
+                      callId: string;
+                      toolName: string;
+                      args: Record<string, unknown>;
+                      threadId: string;
+                      sessionId: string;
+                      agentSlug: string;
+                    }
+                  | undefined = {
                   callId: data.call_id,
                   toolName: data.tool_name,
                   args: data.args ?? {},
+                  threadId: data.thread_id ?? "",
                   sessionId: data.session_id ?? sessionId ?? "",
                   agentSlug: data.agent_slug ?? agentSlugRef.current,
                 };
                 let currentResult = toolResult;
 
                 while (pending) {
-                  const onEventCallback = (eventName: string, eventData: Record<string, any>) => {
+                  const onResumeEvent = (eventName: string, eventData: Record<string, any>) => {
+                    // NOTE: do not also accumulate via resumeResult.* below --
+                    // that would double-count tokens and duplicate the response.
                     if (eventName === "thinking") {
                       thinkingAccumulated += eventData.content ?? "";
                     } else if (eventName === "token") {
@@ -379,17 +445,14 @@ function makeChatModelAdapter(
                   };
 
                   const resumeResult = await processResumeStream(
+                    pending.threadId,
                     pending.sessionId,
                     pending.callId,
-                    pending.toolName,
                     currentResult,
                     pending.agentSlug,
-                    onEventCallback,
+                    onResumeEvent,
                     abortSignal,
                   );
-
-                  accumulated += resumeResult.accumulated;
-                  thinkingAccumulated += resumeResult.thinkingAccumulated;
 
                   const display = thinkingAccumulated
                     ? `<think>\n${thinkingAccumulated}\n</think>\n\n${accumulated}`
@@ -397,12 +460,23 @@ function makeChatModelAdapter(
                   yield { content: [{ type: "text" as const, text: display }] };
 
                   if (resumeResult.interrupted) {
-                    const nextHandler = clientToolHandlerRef.current ?? defaultClientToolHandler;
-                    currentResult = await nextHandler(
-                      resumeResult.interrupted.toolName,
-                      resumeResult.interrupted.args,
-                    );
-                    pending = resumeResult.interrupted;
+                    const next = resumeResult.interrupted;
+
+                    onAgentEvent.current?.("tool_call_start", {
+                      run_id: next.callId,
+                      tool_name: next.toolName,
+                      args: next.args,
+                    });
+
+                    currentResult = await handler(next.toolName, next.args);
+
+                    onAgentEvent.current?.("tool_call_end", {
+                      run_id: next.callId,
+                      tool_name: next.toolName,
+                      result: currentResult,
+                    });
+
+                    pending = next;
                   } else {
                     pending = undefined;
                   }
@@ -642,6 +716,7 @@ function RuntimeHook({
   onThreadSwitchRef,
   messageTransformRef,
   clientToolHandlerRef,
+  navigateRef,
   fixedSessionId,
 }: {
   agentSlugRef: React.RefObject<string>;
@@ -653,6 +728,7 @@ function RuntimeHook({
   onThreadSwitchRef: React.RefObject<(() => void) | undefined>;
   messageTransformRef: React.RefObject<((text: string) => string) | undefined>;
   clientToolHandlerRef: React.RefObject<ClientToolHandler | undefined>;
+  navigateRef: React.RefObject<((path: string) => void) | undefined>;
   fixedSessionId?: string;
 }) {
   const remoteId = useAuiState(
@@ -672,8 +748,8 @@ function RuntimeHook({
 
   const history = useHistoryAdapter(effectiveRemoteId, sessionIdRef, onActivitiesLoadedRef, onConsoleLoadedRef);
   const adapter = useMemo(
-    () => makeChatModelAdapter(agentSlugRef, sessionIdRef, onAgentEventRef, onRunStartRef, messageTransformRef, clientToolHandlerRef),
-    [agentSlugRef, sessionIdRef, onAgentEventRef, onRunStartRef, messageTransformRef, clientToolHandlerRef],
+    () => makeChatModelAdapter(agentSlugRef, sessionIdRef, onAgentEventRef, onRunStartRef, messageTransformRef, clientToolHandlerRef, navigateRef),
+    [agentSlugRef, sessionIdRef, onAgentEventRef, onRunStartRef, messageTransformRef, clientToolHandlerRef, navigateRef],
   );
   const attachmentAdapter = useMemo(
     () =>
@@ -719,6 +795,10 @@ export function ChatRuntime({ children, agentSlug, onPresentationUpdate, message
   agentSlugRef.current = agentSlug;
 
   const sessionIdRef = useRef<string | undefined>(undefined);
+
+  const router = useRouter();
+  const navigateRef = useRef<((path: string) => void) | undefined>((p: string) => router.push(p));
+  navigateRef.current = (p: string) => router.push(p);
 
   const [liveAgentMap, setLiveAgentMap] = useState<Map<string, ChildAgent>>(new Map());
   const [historicalActivities, setHistoricalActivities] = useState<ActivityGroup[]>([]);
@@ -927,7 +1007,7 @@ export function ChatRuntime({ children, agentSlug, onPresentationUpdate, message
 
   const threadListAdapter = useThreadListAdapter(sessionIdRef, onThreadSwitchRef, fixedSessionId);
   const runtime = unstable_useRemoteThreadListRuntime({
-    runtimeHook: () => RuntimeHook({ agentSlugRef, sessionIdRef, onAgentEventRef, onActivitiesLoadedRef, onConsoleLoadedRef, onRunStartRef, onThreadSwitchRef, messageTransformRef, clientToolHandlerRef, fixedSessionId }),
+    runtimeHook: () => RuntimeHook({ agentSlugRef, sessionIdRef, onAgentEventRef, onActivitiesLoadedRef, onConsoleLoadedRef, onRunStartRef, onThreadSwitchRef, messageTransformRef, clientToolHandlerRef, navigateRef, fixedSessionId }),
     adapter: threadListAdapter,
   });
 

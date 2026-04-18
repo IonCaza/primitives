@@ -17,7 +17,25 @@ SPEC = BuiltinAgentSpec(
         "results before reporting."
     ),
     system_prompt=COORDINATOR_SYSTEM_PROMPT,
-    tool_slugs=[],
+    tool_slugs=[
+        # Task management (work decomposition & tracking)
+        "create_task",
+        "update_task",
+        "list_tasks",
+        "get_task",
+        # Skills (reusable prompts)
+        "use_skill",
+        "list_skills",
+        # 3-tier memory
+        "save_memory",
+        "search_memories",
+        "update_memory",
+        "forget_memory",
+        # Screen context & navigation (client-side tools)
+        "get_screen_context",
+        "navigate_user",
+        "get_app_routes",
+    ],
     agent_type="supervisor",
     member_slugs=[
         "text-to-sql",

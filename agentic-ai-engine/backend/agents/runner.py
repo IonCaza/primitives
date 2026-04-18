@@ -37,12 +37,19 @@ DELEGATION_PREFIX = "ask_"
 CLIENT_TOOL_PREFIX = "client__"
 
 
-def make_client_tool(name: str, description: str, schema: dict | None = None) -> BaseTool:
+def make_client_tool(
+    name: str,
+    description: str,
+    args_schema: type | None = None,
+) -> BaseTool:
     """Create a tool that pauses the graph via LangGraph interrupt() and waits
     for the frontend to supply a result through the resume endpoint.
 
     The tool is registered with a ``client__`` prefix so the runner and chat API
     can detect the interrupt and forward the request to the browser.
+
+    When ``args_schema`` is provided, the LLM sees the expected argument names
+    and types (prevents argument-name guessing). Use a Pydantic model class.
     """
 
     async def _execute(**kwargs: Any) -> str:
@@ -57,13 +64,14 @@ def make_client_tool(name: str, description: str, schema: dict | None = None) ->
         coroutine=_execute,
         name=f"{CLIENT_TOOL_PREFIX}{name}",
         description=description,
+        args_schema=args_schema,
     )
 
 
 async def run_agent_stream(
     db: AsyncSession,
     user_input: str,
-    agent_slug: str = "contribution-analyst",
+    agent_slug: str = "supervisor",
     *,
     session_id: uuid.UUID | None = None,
     user_id: uuid.UUID | None = None,
@@ -126,6 +134,9 @@ async def run_agent_stream(
         extra_tools.extend(build_task_tools(db, session_id))
     if user_id is not None and mem_settings.memory_enabled:
         extra_tools.extend(build_memory_tools(user_id))
+
+    from app.agents.tools.screen_context import build_screen_context_tools
+    extra_tools.extend(build_screen_context_tools())
 
     is_supervisor = getattr(agent_config, "agent_type", "standard") == "supervisor"
     if is_supervisor:
@@ -283,6 +294,12 @@ async def run_agent_stream(
                 active_delegations[run_id] = {"slug": slug, "query": query_text}
                 yield {"type": "agent_start", "run_id": run_id, "slug": slug, "query": query_text}
 
+            elif kind == "on_tool_start" and name.startswith(CLIENT_TOOL_PREFIX):
+                # Client tools emit their own synthetic tool_call_start/end events
+                # on the frontend; suppress the backend-emitted ones to avoid
+                # a spinning entry in the console panel.
+                pass
+
             elif kind == "on_tool_start" and name in _PRES_TOOLS:
                 tool_input = event.get("data", {}).get("input", {})
                 pid = tool_input.get("presentation_id", "") if isinstance(tool_input, dict) else ""
@@ -293,6 +310,9 @@ async def run_agent_stream(
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
                 yield {"type": "tool_call_start", "run_id": run_id, "tool_name": name, "args": (tool_input if isinstance(tool_input, dict) else {})}
+
+            elif kind == "on_tool_end" and name.startswith(CLIENT_TOOL_PREFIX):
+                pass
 
             elif kind == "on_tool_end" and name.startswith(DELEGATION_PREFIX):
                 info = active_delegations.pop(run_id, None)
@@ -467,7 +487,7 @@ async def resume_agent_stream(
     thread_id: str,
     resume_value: str,
     *,
-    agent_slug: str = "contribution-analyst",
+    agent_slug: str = "supervisor",
     session_id: uuid.UUID | None = None,
     user_id: uuid.UUID | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
@@ -512,6 +532,9 @@ async def resume_agent_stream(
         extra_tools.extend(build_task_tools(db, session_id))
     if user_id is not None and mem_settings.memory_enabled:
         extra_tools.extend(build_memory_tools(user_id))
+
+    from app.agents.tools.screen_context import build_screen_context_tools
+    extra_tools.extend(build_screen_context_tools())
 
     is_supervisor = getattr(agent_config, "agent_type", "standard") == "supervisor"
     if is_supervisor:
@@ -583,6 +606,9 @@ async def resume_agent_stream(
                 active_delegations[run_id] = {"slug": slug, "query": query_text}
                 yield {"type": "agent_start", "run_id": run_id, "slug": slug, "query": query_text}
 
+            elif kind == "on_tool_start" and name.startswith(CLIENT_TOOL_PREFIX):
+                pass
+
             elif kind == "on_tool_start" and name in _PRES_TOOLS:
                 tool_input = event.get("data", {}).get("input", {})
                 pid = tool_input.get("presentation_id", "") if isinstance(tool_input, dict) else ""
@@ -593,6 +619,9 @@ async def resume_agent_stream(
             elif kind == "on_tool_start":
                 tool_input = event.get("data", {}).get("input", {})
                 yield {"type": "tool_call_start", "run_id": run_id, "tool_name": name, "args": (tool_input if isinstance(tool_input, dict) else {})}
+
+            elif kind == "on_tool_end" and name.startswith(CLIENT_TOOL_PREFIX):
+                pass
 
             elif kind == "on_tool_end" and name.startswith(DELEGATION_PREFIX):
                 info = active_delegations.pop(run_id, None)

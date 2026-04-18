@@ -934,25 +934,65 @@ what the user sees and navigate them to specific pages.
 
 ### 14.1 Backend: Screen Context Tools
 
-Import and include the screen context tools in your agent builder:
+Screen context tools (`get_screen_context`, `navigate_user`, `get_app_routes`)
+register themselves as a tool category when `backend/agents/tools/screen_context.py`
+is imported.
 
-```python
-from app.agents.tools.screen_context import build_screen_context_tools
+To make them available to your builtin agents, either:
 
-# In your runner or coordinator builder, add to extra_tools:
-extra_tools.extend(build_screen_context_tools())
-```
+- **Option A (recommended)**: list the tool slugs in the agent's
+  `tool_slugs` in `backend/agents/builtin/<your_agent>.py`:
+  ```python
+  tool_slugs=[
+      "get_screen_context",
+      "navigate_user",
+      "get_app_routes",
+      # ...
+  ],
+  ```
+  The shipped `supervisor` builtin already does this.
 
-The tools use `make_client_tool()` from `runner.py`, which calls LangGraph
-`interrupt()` to pause the graph. The runner detects the interrupt after
-streaming completes and yields a `client_tool_request` event.
+- **Option B**: wire them directly as `extra_tools` in your runner:
+  ```python
+  from app.agents.tools.screen_context import build_screen_context_tools
+  extra_tools.extend(build_screen_context_tools())
+  ```
+  The runner already does this when streaming / resuming.
 
-### 14.2 Backend: Resume Endpoint
+### 14.2 Populate `APP_ROUTES`
+
+Edit `backend/agents/tools/screen_context.py` and replace the
+placeholder `APP_ROUTES` dict with your application's actual routes.
+Include: path (with `{param}` placeholders), description, and any
+required parameters the caller must resolve from screen context before
+navigating.
+
+This dict is what `get_app_routes` returns to the agent; keeping it in
+one place (instead of the coordinator prompt) lets you add routes
+without retraining the model.
+
+### 14.3 Backend: Resume Endpoint
 
 The `POST /chat/tool-result` endpoint is already provided by `chat.py`.
 Wire it in your FastAPI router alongside the existing chat routes.
 
-### 14.3 Frontend: Zustand Store and Hooks
+The request body shape:
+
+```json
+{
+  "thread_id": "lg-thread-...",
+  "session_id": "uuid",
+  "agent_slug": "supervisor",
+  "call_id": "<tool-call-id-from-interrupt>",
+  "result": "<stringified JSON result>"
+}
+```
+
+`thread_id` is the LangGraph thread recorded on the interrupt event and is
+distinct from `session_id` (the DB chat session). The default chat runtime
+threads this through automatically.
+
+### 14.4 Frontend: Zustand Store and Hooks
 
 1. Copy `stores/ui-context-store.ts` to your frontend `src/stores/` directory.
 2. Copy `hooks/use-register-ui-context.ts` and `hooks/use-route-sync.ts` to
@@ -961,38 +1001,50 @@ Wire it in your FastAPI router alongside the existing chat routes.
 4. In each page component, call `useRegisterUIContext(key, data)` with the
    data the page fetches.
 
-### 14.4 Frontend: Chat Runtime
+### 14.5 Frontend: Chat Runtime
 
-The `ChatRuntime` component now accepts an optional `clientToolHandler` prop.
-For navigation support, pass a handler that calls `router.push()`:
+The `ChatRuntime` shipped with the primitive already handles the standard
+client tools (`get_screen_context`, `navigate_user`):
+
+- `get_screen_context` returns a snapshot of the Zustand store.
+- `navigate_user` calls `router.push(path)` and then polls the Zustand
+  store's `pathname` (300ms intervals, 3s deadline) until it matches the
+  new path before taking a post-navigation snapshot -- this avoids stale
+  context caused by `router.push` being asynchronous.
+- The runtime also emits synthetic `tool_call_start` / `tool_call_end`
+  console events around each client tool so they appear in the
+  `ConsolePanel` just like server-side tools.
+
+To handle additional custom client tools, pass a `clientToolHandler` prop
+to `ChatRuntime`:
 
 ```typescript
-import { useRouter } from "next/navigation";
-import { useUIContextStore } from "@/stores/ui-context-store";
-
-const router = useRouter();
-
 const clientToolHandler = async (toolName: string, args: Record<string, unknown>) => {
-  if (toolName === "navigate_user") {
-    router.push(args.path as string);
-    // Wait for route change to propagate to Zustand
-    await new Promise((r) => setTimeout(r, 500));
+  if (toolName === "my_custom_tool") {
+    return JSON.stringify(await doSomethingOnClient(args));
   }
-  return JSON.stringify(useUIContextStore.getState().getSnapshot());
+  return null; // fall through to defaults
 };
 ```
 
-### 14.5 Coordinator Prompt
+### 14.6 Coordinator Prompt
 
-Add a "Screen Context & Navigation" section to your coordinator system prompt
-listing the available `get_screen_context` and `navigate_user` tools and the
-pages the agent can navigate to. See the CHANGELOG for details.
+The shipped `coordinator.py` already includes a mandatory
+"Screen Context & Navigation" section with the 3-step navigation
+workflow (`get_app_routes` -> `navigate_user` -> wait for page ->
+`get_screen_context`). It does not enumerate specific routes -- it tells
+the agent to call `get_app_routes` instead.
 
 **Adaptation notes:**
-- The route map is app-specific. List only your application's pages.
-- The `clientToolHandler` callback is optional; if omitted, the default
-  handler reads the Zustand store for `get_screen_context` but cannot
-  handle `navigate_user` (it will return an error for unknown tools).
+- Do not enumerate routes in the prompt; populate `APP_ROUTES` in
+  `screen_context.py` so `get_app_routes` returns them dynamically.
+- `navigate_user` now takes a single `path: str` argument (enforced via
+  the `NavigateUserArgs` Pydantic schema). If you customise the tool,
+  keep the schema in sync.
+- The coordinator prompt warns the agent **not** to call
+  `get_screen_context` in the same turn as `navigate_user`; the
+  post-navigation snapshot is produced automatically by the client tool
+  handler.
 
 ## 15. Verification
 

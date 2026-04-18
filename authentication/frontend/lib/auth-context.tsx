@@ -3,7 +3,32 @@
 import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from "react";
 import { api, setSessionExpiredHandler } from "./api-client";
 import { queryClient } from "./query-client";
-import type { User, LoginResponse, MfaChallengeResponse, MfaSetupRequiredResponse, PasswordChangeRequiredResponse } from "./types";
+import type { User, LoginResponse, MfaChallengeResponse, MfaSetupRequiredResponse, PasswordChangeRequiredResponse, TokenResponse } from "./types";
+
+const TRUSTED_DEVICE_STORAGE_KEY = "trusted_device_token";
+
+function getTrustedDeviceToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(TRUSTED_DEVICE_STORAGE_KEY);
+}
+
+function saveTrustedDeviceToken(token: string | null | undefined) {
+  if (typeof window === "undefined") return;
+  if (token) {
+    localStorage.setItem(TRUSTED_DEVICE_STORAGE_KEY, token);
+  }
+}
+
+function clearTrustedDeviceToken() {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(TRUSTED_DEVICE_STORAGE_KEY);
+}
+
+function persistTokens(tokens: TokenResponse) {
+  localStorage.setItem("access_token", tokens.access_token);
+  localStorage.setItem("refresh_token", tokens.refresh_token);
+  saveTrustedDeviceToken(tokens.trusted_device_token);
+}
 
 function isMfaChallenge(r: LoginResponse): r is MfaChallengeResponse {
   return "requires_mfa" in r && r.requires_mfa === true;
@@ -29,7 +54,7 @@ interface AuthContextType {
   mfaMethod: string | null;
   mfaMethods: string[];
   passwordChangeToken: string | null;
-  verifyMfa: (code: string, method: string) => Promise<void>;
+  verifyMfa: (code: string, method: string, rememberDevice?: boolean) => Promise<void>;
   completeMfaSetup: (accessToken: string, refreshToken: string) => Promise<void>;
   clearMfaState: () => void;
 }
@@ -49,6 +74,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(() => {
     localStorage.removeItem("access_token");
     localStorage.removeItem("refresh_token");
+    // Intentionally do NOT clear the trusted-device token on logout: that is the
+    // whole point of "Remember me for 30 days" -- the next login on this device
+    // should still skip MFA.
     setUser(null);
     setMfaPending(false);
     setMfaSetupRequired(false);
@@ -95,10 +123,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = async (username: string, password: string): Promise<"ok" | "mfa_pending" | "mfa_setup_required" | "password_change_required"> => {
     clearMfaState();
     setPasswordChangeToken(null);
-    const result = await api.login({ username, password });
+
+    const trustedDeviceToken = getTrustedDeviceToken() ?? undefined;
+    const result = await api.login({ username, password, trusted_device_token: trustedDeviceToken });
 
     if (isPasswordChangeRequired(result)) {
       setPasswordChangeToken(result.password_change_token);
+      // A password-change flow will invalidate any existing trusted device on
+      // the server side, so drop the stale token locally too.
+      clearTrustedDeviceToken();
       return "password_change_required";
     }
 
@@ -116,17 +149,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return "mfa_setup_required";
     }
 
-    localStorage.setItem("access_token", result.access_token);
-    localStorage.setItem("refresh_token", result.refresh_token);
+    persistTokens(result);
     await refresh();
     return "ok";
   };
 
-  const verifyMfa = async (code: string, method: string) => {
+  const verifyMfa = async (code: string, method: string, rememberDevice: boolean = false) => {
     if (!mfaToken) throw new Error("No MFA token available");
-    const tokens = await api.mfaVerify({ mfa_token: mfaToken, code, method });
-    localStorage.setItem("access_token", tokens.access_token);
-    localStorage.setItem("refresh_token", tokens.refresh_token);
+    const tokens = await api.mfaVerify({
+      mfa_token: mfaToken,
+      code,
+      method,
+      remember_device: rememberDevice,
+    });
+    persistTokens(tokens);
     clearMfaState();
     await refresh();
   };

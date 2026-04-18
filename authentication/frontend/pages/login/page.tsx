@@ -14,6 +14,22 @@ import { api } from "@/lib/api-client";
 import { useAuthProviders } from "@/hooks/use-settings";
 import type { OidcProviderPublicItem } from "@/lib/types";
 
+const TRUSTED_DEVICE_DAYS = 30;
+
+function RememberDeviceCheckbox({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="h-3.5 w-3.5 rounded border-input accent-primary"
+      />
+      <span>Remember this device for {TRUSTED_DEVICE_DAYS} days</span>
+    </label>
+  );
+}
+
 function MfaVerifyForm({ mfaToken, mfaMethod, mfaMethods, onVerified }: {
   mfaToken: string;
   mfaMethod: string | null;
@@ -27,6 +43,7 @@ function MfaVerifyForm({ mfaToken, mfaMethod, mfaMethods, onVerified }: {
   const [emailSent, setEmailSent] = useState(false);
   const [sendingEmail, setSendingEmail] = useState(false);
   const [cooldown, setCooldown] = useState(0);
+  const [rememberDevice, setRememberDevice] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { inputRef.current?.focus(); }, []);
@@ -45,7 +62,10 @@ function MfaVerifyForm({ mfaToken, mfaMethod, mfaMethods, onVerified }: {
     setError("");
     setLoading(true);
     try {
-      await verifyMfa(code, method);
+      // Recovery codes are an emergency mechanism; do not offer a 30-day bypass
+      // on a device the user is recovering account access from.
+      const remember = method === "recovery" ? false : rememberDevice;
+      await verifyMfa(code, method, remember);
       onVerified();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Verification failed");
@@ -98,6 +118,7 @@ function MfaVerifyForm({ mfaToken, mfaMethod, mfaMethods, onVerified }: {
             autoComplete="one-time-code"
             onKeyDown={(e) => { if (e.key === "Enter" && code.length === 6) handleVerify("totp"); }}
           />
+          <RememberDeviceCheckbox checked={rememberDevice} onChange={setRememberDevice} />
           <Button className="w-full" disabled={loading || code.length !== 6} onClick={() => handleVerify("totp")}>
             {loading ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Verifying...</> : "Verify"}
           </Button>
@@ -123,6 +144,7 @@ function MfaVerifyForm({ mfaToken, mfaMethod, mfaMethods, onVerified }: {
                 autoComplete="one-time-code"
                 onKeyDown={(e) => { if (e.key === "Enter" && code.length === 6) handleVerify("email"); }}
               />
+              <RememberDeviceCheckbox checked={rememberDevice} onChange={setRememberDevice} />
               <Button className="w-full" disabled={loading || code.length !== 6} onClick={() => handleVerify("email")}>
                 {loading ? <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Verifying...</> : "Verify"}
               </Button>

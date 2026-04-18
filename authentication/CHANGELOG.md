@@ -1,5 +1,34 @@
 # Authentication Primitive - Changelog
 
+## [1.1.0] - 2026-04-17
+### Added
+- "Remember this device for 30 days" MFA bypass. When a user ticks the checkbox during MFA verification, the server issues a 30-day opaque trust token. Subsequent logins on that device (same browser/localStorage) skip the MFA challenge entirely. Implemented as a new `TrustedDevice` table storing only SHA-256 hashes of random 32-byte url-safe tokens (raw token never persisted).
+  (files: schema/trusted_device.py, schema/user.py, backend/services/trusted_device.py, backend/auth/providers/local.py, backend/api/auth.py, backend/api/mfa.py, frontend/lib/auth-context.tsx, frontend/pages/login/page.tsx)
+- Self-service trusted-device management endpoints: `GET /auth/me/trusted-devices`, `DELETE /auth/me/trusted-devices/{id}`, `DELETE /auth/me/trusted-devices` (revoke all).
+  (files: backend/api/auth.py)
+- `TokenResponse` now optionally carries `trusted_device_token` + `trusted_device_days` when a new trust was established; `LoginRequest` accepts `trusted_device_token` from the client to skip MFA; `MfaVerifyRequest` accepts `remember_device: bool`.
+  (files: backend/api/auth.py)
+
+### Changed
+- `LocalAuthProvider.authenticate` now reads `trusted_device_token` from the credentials dict and, if it validates against a non-expired `TrustedDevice` row for the authenticating user, skips the MFA challenge.
+  (files: backend/auth/providers/local.py)
+- All trusted devices for a user are revoked on: self-service password change, forced password change, admin user password update, admin MFA reset, user MFA disable. This keeps the trust-token surface consistent with other security-sensitive events.
+  (files: backend/api/auth.py, backend/api/mfa.py)
+- `auth-context.tsx` now sends any stored `trusted_device_token` with `login()` and persists the one returned by `verifyMfa()`. The token is intentionally preserved across `logout()` so "Remember me for 30 days" survives explicit sign-out. It is cleared client-side on password-change flows (server also revokes it).
+  (files: frontend/lib/auth-context.tsx)
+- Login page MFA form grew a "Remember this device for 30 days" checkbox on the TOTP and email tabs (deliberately omitted on the recovery-codes tab since recovery is an emergency flow).
+  (files: frontend/pages/login/page.tsx)
+
+### Fixed
+- `backend/api/auth.py` now imports `verify_password` from `app.auth.security`, fixing a `NameError` in the self-service `POST /auth/me/password` endpoint that would have thrown at runtime on every call. Pre-existing bug caught while extending this file.
+  (files: backend/api/auth.py)
+
+### Migration notes
+- Consumers must add a new Alembic migration that creates the `trusted_devices` table with columns: `id` (UUID pk), `user_id` (UUID, FK → users.id ON DELETE CASCADE, indexed), `token_hash` (varchar(64), unique), `device_label`, `user_agent`, `ip_address`, `created_at`, `last_used_at`, `expires_at` (indexed). See `schema/trusted_device.py`.
+- Register the new model in your `app/db/models/__init__.py`: `from app.db.models.trusted_device import TrustedDevice`.
+- Update the frontend `TokenResponse`, `LoginRequest`, and `MfaVerifyRequest` TypeScript types to match the new fields, and update the API client to send/receive them. See INTEGRATION.md §3.4.
+- No action required if you do not use MFA; trusted devices are only ever created during a successful MFA verification.
+
 ## 1.0.0 (2026-03-31)
 
 Initial extraction from contributr.

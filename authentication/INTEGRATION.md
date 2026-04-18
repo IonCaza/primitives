@@ -27,6 +27,7 @@ Copy all model files from `schema/` into your app's models directory:
 | `schema/email_template.py` | `app/db/models/email_template.py` |
 | `schema/platform_credential.py` | `app/db/models/platform_credential.py` |
 | `schema/ssh_credential.py` | `app/db/models/ssh_credential.py` |
+| `schema/trusted_device.py` | `app/db/models/trusted_device.py` |
 
 **Adaptation notes:**
 - Update the `from app.db.base import Base` import in each file to match your
@@ -49,6 +50,7 @@ from app.db.models.smtp_settings import SmtpSettings
 from app.db.models.email_template import EmailTemplate
 from app.db.models.platform_credential import PlatformCredential
 from app.db.models.ssh_credential import SSHCredential
+from app.db.models.trusted_device import TrustedDevice
 ```
 
 ### 1.2 Create Migration
@@ -61,7 +63,22 @@ alembic upgrade head
 ```
 
 Tables created: `users`, `auth_settings`, `oidc_providers`, `smtp_settings`,
-`email_templates`, `platform_credentials`, `ssh_credentials`.
+`email_templates`, `platform_credentials`, `ssh_credentials`, `trusted_devices`.
+
+The `trusted_devices` table powers the "Remember this device for 30 days" MFA
+bypass. Its schema:
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID pk | default uuid4 |
+| `user_id` | UUID | FK `users.id` ON DELETE CASCADE, indexed |
+| `token_hash` | varchar(64) | unique, SHA-256 hex of the raw trust token |
+| `device_label` | varchar(255) | nullable, optional human label |
+| `user_agent` | varchar(512) | nullable |
+| `ip_address` | varchar(64) | nullable |
+| `created_at` | timestamptz | default now |
+| `last_used_at` | timestamptz | default now |
+| `expires_at` | timestamptz | indexed |
 
 ### 1.3 Seed Email Templates
 
@@ -124,6 +141,7 @@ jinja2
 | `backend/services/mfa.py` | `app/services/mfa.py` |
 | `backend/services/oidc.py` | `app/services/oidc.py` |
 | `backend/services/email.py` | `app/services/email.py` |
+| `backend/services/trusted_device.py` | `app/services/trusted_device.py` |
 | `backend/auth/providers/base.py` | `app/auth/providers/base.py` |
 | `backend/auth/providers/local.py` | `app/auth/providers/local.py` |
 | `backend/auth/providers/oidc.py` | `app/auth/providers/oidc.py` |
@@ -278,6 +296,11 @@ mfaEmailConfirm: (data, token?) => { /* pass token as Bearer header */ },
 mfaDisable: (data) => request<{ detail: string }>("/auth/mfa/disable", { method: "POST", body: JSON.stringify(data) }),
 mfaRegenerateRecoveryCodes: (data) => request<RecoveryCodesResponse>("/auth/mfa/recovery-codes", { method: "POST", body: JSON.stringify(data) }),
 
+// Trusted devices ("Remember me 30 days")
+listTrustedDevices: () => request<TrustedDeviceOut[]>("/auth/me/trusted-devices"),
+revokeTrustedDevice: (id) => request<{ detail: string }>(`/auth/me/trusted-devices/${id}`, { method: "DELETE" }),
+revokeAllTrustedDevices: () => request<{ detail: string; revoked: number }>("/auth/me/trusted-devices", { method: "DELETE" }),
+
 // SMTP / Email Templates / Auth Settings / OIDC Providers
 getSmtpSettings: () => request<SmtpSettings>("/settings/smtp"),
 updateSmtpSettings: (data) => request<SmtpSettings>("/settings/smtp", { method: "PUT", body: JSON.stringify(data) }),
@@ -333,6 +356,31 @@ interface TokenResponse {
   access_token: string;
   refresh_token: string;
   token_type: string;
+  trusted_device_token?: string | null;
+  trusted_device_days?: number | null;
+}
+
+interface LoginRequest {
+  email: string;
+  password: string;
+  trusted_device_token?: string | null;
+}
+
+interface MfaVerifyRequest {
+  mfa_token: string;
+  code: string;
+  method: "totp" | "email" | "recovery";
+  remember_device?: boolean;
+}
+
+interface TrustedDeviceOut {
+  id: string;
+  device_label: string | null;
+  user_agent: string | null;
+  ip_address: string | null;
+  created_at: string;
+  last_used_at: string;
+  expires_at: string;
 }
 
 interface MfaChallengeResponse {
@@ -447,6 +495,45 @@ async rewrites() {
 }
 ```
 
+## 4.3 "Remember this device for 30 days" (MFA bypass)
+
+The trusted-device feature lets users skip MFA on subsequent logins from the
+same browser for 30 days after a successful MFA verification. It is fully
+implemented inside the primitive; integrators must only follow the table /
+type / API-client changes above. Key behaviors to know:
+
+- **Opt-in per verification**: the frontend shows a "Remember this device for
+  30 days" checkbox on the TOTP and email MFA tabs of the login page
+  (intentionally omitted on the recovery-codes tab since recovery is an
+  emergency flow). The user must tick the box *and* successfully verify MFA
+  for the server to issue a trust token.
+- **Storage**: the raw trust token is stored in the browser's `localStorage`
+  under the key `trusted_device_token` (see `TRUSTED_DEVICE_STORAGE_KEY` in
+  `frontend/lib/auth-context.tsx`). It is **never** sent to the server except
+  on the next login as `LoginRequest.trusted_device_token`.
+- **Server-side representation**: only a SHA-256 hash of the raw token is
+  persisted (in `trusted_devices.token_hash`), so a database leak does not
+  disclose active trust tokens. `verify_trusted_device` re-hashes and checks
+  against non-expired rows.
+- **Logout preserves trust**: a deliberate UX choice. `auth-context.tsx`
+  explicitly does **not** clear `auth_trusted_device_token` on `logout()`, so
+  "Remember this device" survives explicit sign-out.
+- **Revocation**: all of a user's trust tokens are wiped on any of these
+  events (see `backend/api/auth.py`, `backend/api/mfa.py`):
+  - Self-service password change
+  - Forced password change (via `password_change_token`)
+  - Admin-initiated password update
+  - Admin MFA reset
+  - User disables MFA
+- **Self-service management**: users can list and revoke devices via
+  `GET /auth/me/trusted-devices`, `DELETE /auth/me/trusted-devices/{id}`,
+  or `DELETE /auth/me/trusted-devices` (revoke all). Build a settings UI
+  that wires these into `api.listTrustedDevices` /
+  `api.revokeTrustedDevice` / `api.revokeAllTrustedDevices`.
+- **Tunable TTL**: the 30-day window is controlled by
+  `TRUSTED_DEVICE_TTL_DAYS` in `backend/services/trusted_device.py`. Change it
+  there if your policy differs.
+
 ## 5. Post-Integration Checklist
 
 - [ ] Set strong `SECRET_KEY` and `JWT_SECRET` in `.env`
@@ -459,3 +546,6 @@ async rewrites() {
 - [ ] (Optional) Enable forced MFA in auth settings
 - [ ] (Optional) Implement platform-specific credential tests
 - [ ] (Optional) Replace login page icon with your app's branding
+- [ ] (Optional) Build a "Trusted devices" management UI using
+      `api.listTrustedDevices` / `api.revokeTrustedDevice` /
+      `api.revokeAllTrustedDevices`

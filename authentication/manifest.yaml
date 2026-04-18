@@ -1,8 +1,9 @@
 name: authentication
-version: "1.0.0"
+version: "1.1.0"
 description: >
   Full-stack authentication primitive with pluggable auth providers (local + OIDC/OAuth2),
   multi-factor authentication (TOTP authenticator + email OTP + recovery codes),
+  "Remember this device for 30 days" trusted-device bypass of MFA on subsequent logins,
   JWT token management with refresh flow, Fernet-based credential vaulting (platform
   API tokens, SSH keys, OIDC client secrets, SMTP passwords), admin user management,
   configurable email delivery with Jinja2 templates, and complete React frontend
@@ -32,6 +33,7 @@ provides:
     - EmailTemplate (Jinja2-based email templates)
     - PlatformCredential (encrypted API token vault)
     - SSHCredential (encrypted SSH key storage)
+    - TrustedDevice (SHA-256 hashed tokens for "Remember me 30 days" MFA bypass)
 
   routes:
     - POST /auth/register (first-run admin creation)
@@ -56,6 +58,9 @@ provides:
     - POST /auth/mfa/setup/email/confirm (confirm email MFA enrollment)
     - POST /auth/mfa/disable (disable MFA)
     - POST /auth/mfa/recovery-codes (regenerate recovery codes)
+    - GET  /auth/me/trusted-devices (list caller's trusted devices)
+    - DELETE /auth/me/trusted-devices (revoke all caller's trusted devices)
+    - DELETE /auth/me/trusted-devices/{id} (revoke a single trusted device)
     - GET  /auth/oidc/{slug}/authorize (OIDC login redirect)
     - GET  /auth/oidc/{slug}/callback (OIDC callback)
     - CRUD /settings/oidc-providers (admin OIDC provider management)
@@ -83,6 +88,7 @@ provides:
     - mfa (TOTP, email OTP with Redis cooldown, recovery codes)
     - oidc (PKCE, discovery, JWKS, token exchange, claim mapping)
     - email (SMTP sending with Jinja2 template rendering)
+    - trusted_device (SHA-256 tokenized "Remember me 30 days" MFA bypass; revoked on password change / MFA disable / MFA reset)
 
 extension_points:
   - "Platform enum: Override the generic Platform enum with your app-specific platforms (GitHub, GitLab, Azure, etc.)"

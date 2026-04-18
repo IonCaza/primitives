@@ -25,6 +25,7 @@ from app.services.mfa import (
     hash_recovery_codes,
 )
 from app.services.email import send_templated_email
+from app.services.trusted_device import revoke_all_trusted_devices
 
 router = APIRouter(prefix="/auth/mfa", tags=["mfa"])
 
@@ -210,6 +211,7 @@ async def disable_mfa(
     user.mfa_recovery_codes_encrypted = None
     user.mfa_setup_complete = False
     await db.commit()
+    await revoke_all_trusted_devices(db, user.id)
     return {"detail": "MFA disabled"}
 
 

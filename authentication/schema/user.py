@@ -47,4 +47,5 @@ class User(Base):
     oidc_subject: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="Subject claim from the OIDC ID token")
 
     ssh_credentials = relationship("SSHCredential", back_populates="created_by_user", cascade="all, delete-orphan", passive_deletes=True)
+    trusted_devices = relationship("TrustedDevice", back_populates="user", cascade="all, delete-orphan", passive_deletes=True)
     oidc_provider = relationship("OidcProvider")

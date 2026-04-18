@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, field_validator
@@ -11,6 +12,7 @@ from app.db.models import User
 from app.db.models.oidc_provider import OidcProvider
 from app.auth.security import (
     hash_password,
+    verify_password,
     create_access_token,
     create_refresh_token,
     create_mfa_challenge_token,
@@ -31,6 +33,13 @@ from app.services.mfa import (
     check_otp_cooldown,
 )
 from app.services.email import send_templated_email
+from app.services.trusted_device import (
+    TRUSTED_DEVICE_TTL_DAYS,
+    create_trusted_device,
+    list_user_trusted_devices,
+    revoke_all_trusted_devices,
+    revoke_trusted_device,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -57,12 +66,15 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+    trusted_device_token: str | None = None
 
 
 class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
+    trusted_device_token: str | None = None
+    trusted_device_days: int | None = None
 
 
 class MfaChallengeResponse(BaseModel):
@@ -137,6 +149,7 @@ class MfaVerifyRequest(BaseModel):
     mfa_token: str
     code: str
     method: str  # "totp", "email", "recovery"
+    remember_device: bool = False
 
 
 class MfaSendEmailOtpRequest(BaseModel):
@@ -172,7 +185,12 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
 @router.post("/login")
 async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     auth_result = await _local_provider.authenticate(
-        {"username": body.username, "password": body.password}, db
+        {
+            "username": body.username,
+            "password": body.password,
+            "trusted_device_token": body.trusted_device_token,
+        },
+        db,
     )
     user = auth_result.user
 
@@ -240,8 +258,13 @@ async def list_auth_providers(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/mfa/verify", response_model=TokenResponse)
-async def mfa_verify(body: MfaVerifyRequest, db: AsyncSession = Depends(get_db)):
-    """Verify an MFA code during login and issue full tokens."""
+async def mfa_verify(body: MfaVerifyRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    """Verify an MFA code during login and issue full tokens.
+
+    If ``remember_device`` is true, also persist a trusted-device row and return
+    its raw token in ``trusted_device_token``. The client stores that token to
+    skip MFA for ``TRUSTED_DEVICE_TTL_DAYS`` days on this device.
+    """
     payload = decode_token(body.mfa_token)
     if payload is None or payload.get("type") != "mfa_challenge":
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired MFA token")
@@ -269,9 +292,20 @@ async def mfa_verify(body: MfaVerifyRequest, db: AsyncSession = Depends(get_db))
     if not verified:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MFA code")
 
+    trusted_token: str | None = None
+    if body.remember_device:
+        trusted_token = await create_trusted_device(
+            db,
+            user.id,
+            user_agent=request.headers.get("user-agent"),
+            ip_address=(request.client.host if request.client else None),
+        )
+
     return TokenResponse(
         access_token=create_access_token(str(user.id)),
         refresh_token=create_refresh_token(str(user.id)),
+        trusted_device_token=trusted_token,
+        trusted_device_days=TRUSTED_DEVICE_TTL_DAYS if trusted_token else None,
     )
 
 
@@ -338,6 +372,8 @@ async def change_password(body: ChangePasswordRequest, db: AsyncSession = Depend
     user.hashed_password = hash_password(body.new_password)
     user.must_change_password = False
     await db.commit()
+
+    await revoke_all_trusted_devices(db, user.id)
 
     return TokenResponse(
         access_token=create_access_token(str(user.id)),
@@ -429,6 +465,7 @@ async def change_own_password(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Password must be at least 8 characters")
     user.hashed_password = hash_password(body.new_password)
     await db.commit()
+    await revoke_all_trusted_devices(db, user.id)
     return {"detail": "Password changed successfully"}
 
 
@@ -513,11 +550,17 @@ async def update_user(
         if user_id == admin.id and not body.is_active:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot deactivate yourself")
         target.is_active = body.is_active
+    password_changed = False
     if body.password is not None and body.password:
         target.hashed_password = hash_password(body.password)
+        password_changed = True
 
     await db.commit()
     await db.refresh(target)
+
+    if password_changed:
+        await revoke_all_trusted_devices(db, target.id)
+
     return target
 
 
@@ -539,6 +582,7 @@ async def admin_reset_mfa(
     target.mfa_setup_complete = False
     await db.commit()
     await db.refresh(target)
+    await revoke_all_trusted_devices(db, target.id)
     return target
 
 
@@ -552,3 +596,49 @@ async def delete_user(user_id: uuid.UUID, db: AsyncSession = Depends(get_db), ad
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     await db.delete(user)
     await db.commit()
+
+
+# ── Trusted devices (self-service) ───────────────────────────────────────
+
+class TrustedDeviceOut(BaseModel):
+    id: uuid.UUID
+    device_label: str | None
+    user_agent: str | None
+    ip_address: str | None
+    created_at: datetime
+    last_used_at: datetime
+    expires_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+@router.get("/me/trusted-devices", response_model=list[TrustedDeviceOut])
+async def list_my_trusted_devices(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all non-expired trusted devices for the authenticated user."""
+    devices = await list_user_trusted_devices(db, user.id)
+    return devices
+
+
+@router.delete("/me/trusted-devices/{device_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_my_trusted_device(
+    device_id: uuid.UUID,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke a single trusted device owned by the authenticated user."""
+    found = await revoke_trusted_device(db, user.id, device_id)
+    if not found:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trusted device not found")
+
+
+@router.delete("/me/trusted-devices", status_code=status.HTTP_200_OK)
+async def revoke_all_my_trusted_devices(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Revoke every trusted device for the authenticated user. Future logins will require MFA."""
+    count = await revoke_all_trusted_devices(db, user.id)
+    return {"revoked": count}
